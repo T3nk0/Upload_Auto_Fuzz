@@ -1,0 +1,5 @@
+# 忽略所有 .DS_Store 文件
+.DS_Store
+*.DS_Store
+# 可选：其他 macOS 系统文件
+._*
