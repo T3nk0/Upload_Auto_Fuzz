@@ -1,10 +1,10 @@
-# Inruder_Upload_Fuzz - Burp Suite 文件上传漏洞Fuzz插件
+# Upload_Auto_Fuzz - Burp Suite 文件上传漏洞Fuzz插件
 
 ![Burp Suite Extension](https://img.shields.io/badge/Burp%20Suite-Extension-orange)
 
 ## 功能概述
 
-本Burp Suite插件专为文件上传漏洞检测设计，提供自动化Fuzz测试payload生成功能，共可生成300+条payload。效果如图
+本Burp Suite插件专为文件上传漏洞检测设计，提供自动化Fuzz测试，共300+条payload。效果如图
 
 ![14](./assets/14.png)
 
@@ -34,7 +34,7 @@
 
 1. 确保已安装Burp Suite Professional
 2. 在Burp Extender中点击"Add"
-3. 选择下载的`Inruder_Upload_Fuzz.py`文件
+3. 选择下载的`Upload_Auto_Fuzz.py`文件
 4. 点击"Next"直到安装完成
 
 ## 使用指南
